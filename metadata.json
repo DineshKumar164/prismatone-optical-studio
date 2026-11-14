@@ -1,0 +1,6 @@
+{
+  "name": "Prismatone Optical Simulation Studio",
+  "description": "GPU-accelerated cinema camera sensor and optical lens simulation workstation built with Next.js, TypeScript, WebGPU/WGSL, WebGL2, Three.js, WebCodecs, and PostgreSQL.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,89 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --bg-canvas: #090a0f;
+    --bg-surface: #11131a;
+    --bg-elevated: #171a24;
+    --border-subtle: #232736;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --accent-amber: #f59e0b;
+  }
+
+  body {
+    background-color: #090a0f;
+    color: #f1f5f9;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+}
+
+/* Custom studio range sliders */
+input[type="range"].studio-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: pan-y;
+}
+
+input[type="range"].studio-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #262b3d;
+}
+
+input[type="range"].studio-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  width: 16px;
+  border-radius: 4px;
+  background: #f59e0b;
+  border: 1px solid #fef3c7;
+  margin-top: -6px;
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (pointer: coarse) {
+  input[type="range"].studio-slider {
+    min-height: 28px;
+  }
+  input[type="range"].studio-slider::-webkit-slider-thumb {
+    height: 20px;
+    width: 20px;
+    border-radius: 6px;
+    margin-top: -8px;
+  }
+}
+
+input[type="range"].studio-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+
+/* Safe-area utilities for iPhone notch / Dynamic Island and home indicator */
+.safe-top {
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+}
+.safe-bottom {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Hide scrollbars while preserving touch horizontal scrolling on iPhone */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
