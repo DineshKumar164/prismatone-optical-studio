@@ -14,8 +14,16 @@ import { performSpectralColorReconstructionCpu } from '../shaders/spectral-color
 import {
   classifyLensGlareOptics,
   evaluatePhysicallyBasedFlareCpu,
+  evaluatePointSpecularEmitterCpu,
   getLensGhostTable,
 } from '../shaders/physically-based-lens-flare.glsl';
+import {
+  FLARE_QUAD_VERTEX_SHADER,
+  FLARE_BRIGHT_EXTRACT_FRAGMENT_SHADER,
+  FLARE_KAWASE_STREAK_FRAGMENT_SHADER,
+  FLARE_ASSEMBLE_FRAGMENT_SHADER,
+  computeBeerLambertStreakAttenuation,
+} from '../shaders/optical-flare-multipass.glsl';
 
 test('buildOpticalParametersFromRig merges camera, lens, and film stock defaults accurately', () => {
   const camera = getCameraProfileById('arri-alexa-35');
@@ -276,6 +284,50 @@ test('classifyLensGlareOptics separates Spherical circular/starburst glare from 
   assert.equal(anam20.anamorphicWeight, 1.0);
   assert.equal(anam20.sphericalWeight, 0);
   assert.ok(anam20.ghostAspectRatio > 1.9);
+});
+
+test('evaluatePointSpecularEmitterCpu isolates bright point lights and suppresses flat bright surfaces', () => {
+  // 1. Bright isolated white bulb over dark background emits strongly
+  const whiteLamp = evaluatePointSpecularEmitterCpu([1.0, 0.99, 0.96], [0.12, 0.12, 0.14], [0.10, 0.11, 0.12]);
+  // 2. Warm tungsten street lantern over night backdrop also triggers cleanly
+  const warmLantern = evaluatePointSpecularEmitterCpu([0.99, 0.78, 0.36], [0.16, 0.14, 0.12], [0.15, 0.13, 0.11]);
+  // 3. Flat bright wall or evenly lit face (identical neighbors) is suppressed to avoid washout
+  const flatBrightWall = evaluatePointSpecularEmitterCpu([0.85, 0.85, 0.85], [0.85, 0.85, 0.85], [0.85, 0.85, 0.85]);
+  // 4. Midtone scene content emits zero flare
+  const darkMidtone = evaluatePointSpecularEmitterCpu([0.32, 0.30, 0.28], [0.22, 0.20, 0.18], [0.24, 0.22, 0.20]);
+
+  assert.ok(whiteLamp > 0.7, `Expected bright white point light to emit strongly, got ${whiteLamp}`);
+  assert.ok(warmLantern > 0.45, `Expected warm tungsten lantern to emit cleanly, got ${warmLantern}`);
+  assert.ok(
+    flatBrightWall < 0.12 && flatBrightWall < whiteLamp * 0.25,
+    `Expected flat bright surface to be strongly suppressed, got ${flatBrightWall} vs lamp ${whiteLamp}`
+  );
+  assert.equal(darkMidtone, 0, 'Midtones below specular threshold must emit zero flare');
+});
+
+test('computeBeerLambertStreakAttenuation preserves dominant coating channel and multi-pass flare shaders are valid', () => {
+  const cobalt = computeBeerLambertStreakAttenuation([0.16, 0.56, 1.0], 2.0);
+  assert.ok(cobalt[2] > cobalt[1] && cobalt[1] > cobalt[0], 'Cobalt blue coating must retain blue longest along streak');
+
+  const golden = computeBeerLambertStreakAttenuation([1.0, 0.72, 0.28], 2.0);
+  assert.ok(golden[0] > golden[1] && golden[1] > golden[2], 'Golden Atlas coating must retain warm amber longest');
+
+  const wideReach = computeBeerLambertStreakAttenuation([0.16, 0.56, 1.0], 2.0);
+  const mildReach = computeBeerLambertStreakAttenuation([0.16, 0.56, 1.0], 1.33);
+  assert.ok(wideReach[2] > mildReach[2], '2.0x anamorphic squeeze should sweep wider than 1.33x');
+
+  const shaders = [
+    FLARE_QUAD_VERTEX_SHADER,
+    FLARE_BRIGHT_EXTRACT_FRAGMENT_SHADER,
+    FLARE_KAWASE_STREAK_FRAGMENT_SHADER,
+    FLARE_ASSEMBLE_FRAGMENT_SHADER,
+  ];
+  for (const src of shaders) {
+    assert.ok(src.includes('void main()'), 'Multi-pass flare shader must define void main()');
+    const openBraces = (src.match(/\{/g) || []).length;
+    const closeBraces = (src.match(/\}/g) || []).length;
+    assert.equal(openBraces, closeBraces, 'Multi-pass flare shader braces must be balanced');
+  }
 });
 
 

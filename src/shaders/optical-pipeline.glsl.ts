@@ -38,6 +38,8 @@ out vec4 fragColor;
 
 uniform vec4 u_data[32];
 uniform sampler2D u_sourceTex;
+uniform sampler2D u_flareTex;
+uniform vec4 u_flareMeta; // x: 1.0 when multi-pass FBO flare is bound, y: useHdrEncoding
 
 ${SPECTRAL_RECONSTRUCTION_GLSL_MODULE}
 
@@ -593,29 +595,58 @@ void main() {
   // Colorimetric Hollywood Cinema Show LUT Grade + Smooth Blend Integration
   color = applyHollywoodCinemaLut(color, hollywoodLutId, hollywoodLutBlend);
 
-  // Post-LUT Optical Glass/Element Stage: Camera-Captured Anamorphic Streaks, Spherical Starbursts, Ghosts & Veiling Glare
-  // Evaluated post-tonemap so vibrant cylindrical cyan/gold streaks preserve brilliance without compressing or lifting shadows.
+  // Post-LUT Optical Glass/Element Stage: Multi-Pass Kawase Beer-Lambert Anamorphic Streaks,
+  // Fraunhofer Spherical Starbursts, Out-of-Focus Chromatic Ghosts & Localized Veiling Halo.
+  // Composited in TRUE LINEAR HDR LIGHT (physical photon addition + filmic highlight shoulder)
+  // so dark shadows & matte surfaces with zero flare remain 100% crisp, ink-black & untouched.
   if (flareIntensity > 0.005 || veilingGlare > 0.005) {
-    float diffractionAngleDeg = atan(lightSourceUV.y - 0.5, lightSourceUV.x - 0.5) * 57.2957795;
-    vec3 physFlare = evaluateCapturedLensFlareAndGlare(
-      u_sourceTex,
-      distortedUV,
-      diffractionAngleDeg,
-      fStop,
-      irisBlades,
-      squeeze,
-      canvasAspect,
-      flareIntensity,
-      veilingGlare,
-      flareTint,
-      ghostGeo,
-      ghostOpt
-    );
-    if ((int(floor(hollywoodLutId + 0.5)) == 8 && hollywoodLutBlend > 0.001) || effectiveSat <= 0.02) {
-      float flareDesat = effectiveSat <= 0.02 ? 1.0 : hollywoodLutBlend;
-      physFlare = mix(physFlare, vec3(luma(physFlare)), flareDesat);
+    vec3 physFlare;
+    if (u_flareMeta.x > 0.5) {
+      vec3 rawSample = texture(u_flareTex, vec2(v_uv.x, 1.0 - v_uv.y)).rgb;
+      if (u_flareMeta.y > 0.5) {
+        vec3 scaled = clamp(rawSample, vec3(0.0), vec3(0.992)) / (1.0 + 1.0 / 6.0);
+        physFlare = (scaled * 6.0) / max(vec3(0.008), vec3(1.0) - scaled);
+      } else {
+        physFlare = max(vec3(0.0), rawSample);
+      }
+      if ((int(floor(hollywoodLutId + 0.5)) == 8 && hollywoodLutBlend > 0.001) || effectiveSat <= 0.02) {
+        float flareDesat = effectiveSat <= 0.02 ? 1.0 : hollywoodLutBlend;
+        physFlare = mix(physFlare, vec3(luma(physFlare)), flareDesat);
+      }
+      // Physical additive photon integration in linear light + ACES-inspired filmic shoulder
+      vec3 linBase = pow(max(vec3(0.0), color), vec3(2.2));
+      vec3 linAdded = linBase + physFlare;
+      vec3 over = max(vec3(0.0), linAdded - vec3(0.68));
+      vec3 shouldered = min(linAdded, vec3(0.68)) + (over / (vec3(1.0) + over * 0.92));
+      // Softly preserve exact original base pixel where flare radiance == 0
+      float fMask = smoothstep(0.001, 0.025, max(physFlare.r, max(physFlare.g, physFlare.b)));
+      vec3 finalLin = mix(linBase, shouldered, fMask);
+      color = pow(clamp(finalLin, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
+    } else {
+      bool isDefaultAngle = length(lightSourceUV - vec2(0.72, 0.28)) < 0.015;
+      float diffractionAngleDeg = isDefaultAngle
+        ? 0.0
+        : atan(lightSourceUV.y - 0.5, lightSourceUV.x - 0.5) * 57.2957795;
+      physFlare = evaluateCapturedLensFlareAndGlare(
+        u_sourceTex,
+        distortedUV,
+        diffractionAngleDeg,
+        fStop,
+        irisBlades,
+        squeeze,
+        canvasAspect,
+        flareIntensity,
+        veilingGlare,
+        flareTint,
+        ghostGeo,
+        ghostOpt
+      );
+      if ((int(floor(hollywoodLutId + 0.5)) == 8 && hollywoodLutBlend > 0.001) || effectiveSat <= 0.02) {
+        float flareDesat = effectiveSat <= 0.02 ? 1.0 : hollywoodLutBlend;
+        physFlare = mix(physFlare, vec3(luma(physFlare)), flareDesat);
+      }
+      color = compositeOpticalFlare(color, physFlare);
     }
-    color = clamp(color + physFlare * (1.0 - color * 0.35), vec3(0.0), vec3(1.0));
   }
 
   // Enforce clean panchromatic monochrome when B&W (saturation == 0) is active
@@ -657,10 +688,10 @@ void main() {
     float nChromaR = hash12(grainCoord + vec2(13.1, 7.7)) - 0.5;
     float nChromaB = hash12(grainCoord + vec2(29.4, 19.3)) - 0.5;
 
-    // Camera CMOS Row/Column Fixed-Pattern Noise (amplified at high EI/ISO in shadows)
-    float rowNoise = (hash12(vec2(floor(v_uv.y * res.y), 3.1)) - 0.5) * fpnAmount * isoMultiplier;
-    float colNoise = (hash12(vec2(floor(v_uv.x * res.x), 8.7)) - 0.5) * fpnAmount * isoMultiplier * 0.75;
-    float cmosFpn = (rowNoise + colNoise) * clamp(1.2 - postLum * 1.8, 0.15, 1.0);
+    // Subtle Cinema Sensor Row/Column Read-Noise (kept whisper-low so shadows & flare wings never show a screen-door grid)
+    float rowNoise = (hash12(vec2(floor(v_uv.y * res.y), 3.1)) - 0.5) * fpnAmount * isoMultiplier * 0.16;
+    float colNoise = (hash12(vec2(floor(v_uv.x * res.x), 8.7)) - 0.5) * fpnAmount * isoMultiplier * 0.12;
+    float cmosFpn = (rowNoise + colNoise) * clamp(1.0 - postLum * 2.0, 0.0, 0.85);
 
     float midtoneWeight = 3.6 * postLum * (1.0 - postLum * 0.75) + 0.15;
     color += vec3(

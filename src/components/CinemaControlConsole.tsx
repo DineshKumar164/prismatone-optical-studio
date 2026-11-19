@@ -11,7 +11,6 @@ import {
 import { OpticalSimulationParameters } from '../profiles/optical-math';
 import { CircularDialSelector, DialItem } from './CircularDialSelector';
 import { RotaryParameterDial } from './RotaryParameterDial';
-import { SpectralSensitivityVisualizer } from './SpectralSensitivityVisualizer';
 import {
   Aperture,
   Camera,
@@ -19,16 +18,17 @@ import {
   ChevronUp,
   Circle,
   Disc,
+  Eye,
   Film,
   Focus,
+  Palette,
   RotateCcw,
-  Sparkles,
   Square,
   Sun,
 } from 'lucide-react';
 import { formatRecordingDuration } from '../utils/video-export';
 
-export type ConsoleTabId = 'camera' | 'lens' | 'exposure' | 'bokeh' | 'flare' | 'spectral' | 'film';
+export type ConsoleTabId = 'camera' | 'lens' | 'exposure' | 'bokeh' | 'flare' | 'color' | 'film';
 
 export interface PrintStockOption {
   id: number;
@@ -238,16 +238,16 @@ export function CinemaControlConsole({
           <button
             type="button"
             role="tab"
-            aria-selected={activeTab === 'spectral' && !isConsoleCollapsed}
-            onClick={() => onTabChange('spectral')}
+            aria-selected={activeTab === 'color' && !isConsoleCollapsed}
+            onClick={() => onTabChange('color')}
             className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-semibold whitespace-nowrap shrink-0 transition-all ${
-              activeTab === 'spectral' && !isConsoleCollapsed
+              activeTab === 'color' && !isConsoleCollapsed
                 ? 'bg-gradient-to-b from-purple-400 to-indigo-500 text-white shadow-[0_2px_10px_rgba(168,85,247,0.5),inset_0_1px_1px_rgba(255,255,255,0.4)] font-bold'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
             }`}
           >
-            <Sparkles className="w-3.5 h-3.5 shrink-0" />
-            <span>Spectral</span>
+            <Palette className="w-3.5 h-3.5 shrink-0" />
+            <span>Color</span>
           </button>
 
           <button
@@ -323,15 +323,15 @@ export function CinemaControlConsole({
         </div>
       </div>
 
-      {/* Console Drawer Panel (Floating Bottom Sheet on < lg, Docked Studio Tray on lg+) */}
+      {/* Console Drawer Panel (Static Fixed-Height Sheet on < lg, Static Docked Studio Tray on lg+) */}
       {!isConsoleCollapsed && (
-        <div className="absolute lg:static bottom-full left-2 right-2 lg:left-auto lg:right-auto mb-2 lg:mb-0 rounded-2xl lg:rounded-none border lg:border-0 border-white/15 bg-[#090d16]/95 lg:bg-transparent backdrop-blur-2xl shadow-[0_-16px_48px_rgba(0,0,0,0.95)] lg:shadow-none max-h-[52dvh] lg:max-h-[370px] overflow-y-auto no-scrollbar z-40">
+        <div className="absolute lg:static bottom-full left-2 right-2 lg:left-auto lg:right-auto mb-2 lg:mb-0 rounded-2xl lg:rounded-none border lg:border-0 border-white/15 bg-[#090d16]/95 lg:bg-transparent backdrop-blur-2xl shadow-[0_-16px_48px_rgba(0,0,0,0.95)] lg:shadow-none h-[46dvh] lg:h-[352px] overflow-y-auto no-scrollbar z-40">
           {/* Mobile Bottom-Sheet Header Grabber & Close */}
           <div className="lg:hidden sticky top-0 z-10 flex items-center justify-between px-3 py-2 bg-[#080c15]/95 backdrop-blur-xl border-b border-white/10">
             <div className="flex items-center gap-2">
               <span className="w-6 h-1 rounded-full bg-white/25" />
               <span className="text-[11px] font-mono uppercase tracking-wider text-amber-300 font-bold">
-                {activeTab} Dials
+                {activeTab} Controls
               </span>
               <span className="text-[10px] font-mono text-slate-400 truncate max-w-[140px]">
                 {activeCamera.model}
@@ -346,7 +346,8 @@ export function CinemaControlConsole({
             </button>
           </div>
 
-          <div className="p-2.5 sm:p-4">
+          <div className="min-h-full p-2.5 sm:px-4 sm:py-3 flex flex-col">
+            <div className="my-auto w-full">
             {/* TAB 1: CAMERA DIAL & HARDWARE TELEMETRY */}
             {activeTab === 'camera' && (
             <div className="flex flex-col md:flex-row items-center justify-center gap-4 sm:gap-6 max-w-4xl mx-auto">
@@ -363,52 +364,52 @@ export function CinemaControlConsole({
               </div>
 
               {/* Camera Profile Hardware Readout Card */}
-              <div className="flex-1 w-full max-w-md bg-black/40 rounded-2xl border border-white/10 p-4 flex flex-col gap-3">
-                <div className="flex items-center justify-between border-b border-white/5 pb-2">
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">
+              <div className="flex-1 w-full max-w-lg bg-black/40 rounded-2xl border border-white/10 p-3 flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2 border-b border-white/5 pb-1.5">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-white truncate">
                       {activeCamera.manufacturer} {activeCamera.model}
                     </h3>
-                    <p className="text-[11px] font-mono text-amber-400">
+                    <p className="text-[11px] font-mono text-amber-400 truncate">
                       {activeCamera.transferCurve} · {activeCamera.colorSpace}
                     </p>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-400/10 border border-amber-400/30 text-amber-300">
+                  <span className="shrink-0 text-[10px] font-mono text-amber-300/90 whitespace-nowrap">
                     {activeCamera.sensorFormat}
                   </span>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 text-center font-mono">
-                  <div className="bg-white/5 p-2 rounded-xl border border-white/5">
+                  <div className="bg-white/5 px-2 py-1.5 rounded-xl border border-white/5">
                     <span className="text-[9px] text-slate-400 block uppercase">Dyn. Range</span>
                     <span className="text-xs font-bold text-slate-100">
                       {activeCamera.dynamicRangeStops} stops
                     </span>
                   </div>
-                  <div className="bg-white/5 p-2 rounded-xl border border-white/5">
+                  <div className="bg-white/5 px-2 py-1.5 rounded-xl border border-white/5">
                     <span className="text-[9px] text-slate-400 block uppercase">Base ISO</span>
                     <span className="text-xs font-bold text-slate-100">
                       {activeCamera.baseIso}
                       {activeCamera.dualNativeIso ? ` / ${activeCamera.dualNativeIso}` : ''}
                     </span>
                   </div>
-                  <div className="bg-white/5 p-2 rounded-xl border border-white/5">
+                  <div className="bg-white/5 px-2 py-1.5 rounded-xl border border-white/5">
                     <span className="text-[9px] text-slate-400 block uppercase">CFA Pattern</span>
-                    <span className="text-xs font-bold text-slate-100">
+                    <span className="text-[11px] font-bold text-slate-100 block truncate" title={activeCamera.cfaPattern}>
                       {activeCamera.cfaPattern}
                     </span>
                   </div>
                 </div>
 
                 {/* Sensor Crop Mode Pills */}
-                <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="flex items-center gap-1 flex-wrap">
                   <span className="text-[10px] text-slate-400 uppercase font-mono mr-1">Crop:</span>
                   {activeCamera.cropModes.map((crop) => (
                     <button
                       key={crop.id}
                       type="button"
                       onClick={() => onUpdateParam('sensorCropId', crop.id)}
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono transition-colors ${
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono transition-colors ${
                         params.sensorCropId === crop.id
                           ? 'bg-amber-400 text-slate-950 font-bold'
                           : 'bg-white/5 text-slate-300 hover:bg-white/10'
@@ -420,7 +421,7 @@ export function CinemaControlConsole({
                 </div>
 
                 {/* ISO Sensitivity, Contrast & B&W Mode Controls */}
-                <div className="pt-2.5 border-t border-white/10 flex flex-col gap-2 font-mono text-xs">
+                <div className="pt-2 border-t border-white/10 flex flex-col gap-1.5 font-mono text-xs">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="flex items-center justify-between text-[11px]">
@@ -507,11 +508,11 @@ export function CinemaControlConsole({
             </div>
           )}
 
-          {/* TAB 2: LENS DIAL & OPTICAL CHARACTERISTICS */}
+          {/* TAB 2: LENS DIAL, MANUAL FOCUS & INTEGRATED OPTICAL FEATURES */}
           {activeTab === 'lens' && (
-            <div className="flex flex-col md:flex-row items-center justify-center gap-4 sm:gap-6 max-w-4xl mx-auto">
+            <div className="flex flex-col md:flex-row items-center justify-center gap-4 sm:gap-5 max-w-5xl mx-auto">
               {/* Skeuomorphic Rotary Dial for Lenses */}
-              <div className="shrink-0 w-full max-w-[270px] sm:w-auto">
+              <div className="shrink-0 w-full max-w-[265px] sm:w-auto">
                 <CircularDialSelector
                   items={lensDialItems}
                   selectedId={selectedLensId}
@@ -522,62 +523,289 @@ export function CinemaControlConsole({
                 />
               </div>
 
-              {/* Lens Optical Profile Card */}
-              <div className="flex-1 w-full max-w-md bg-black/40 rounded-2xl border border-white/10 p-4 flex flex-col gap-3">
-                <div className="flex items-center justify-between border-b border-white/5 pb-2">
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">{activeLens.model}</h3>
-                    <p className="text-[11px] font-mono text-sky-400">
-                      {activeLens.manufacturer} · {activeLens.opticalType}
+              {/* Integrated Lens Optical Profile, Manual Focus & Glass Characteristics */}
+              <div className="flex-1 w-full bg-black/45 rounded-2xl border border-white/10 p-3.5 flex flex-col gap-2.5">
+                {/* Header & Unboxed Optical Telemetry */}
+                <div className="flex items-start justify-between gap-2 border-b border-white/10 pb-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-sm font-semibold text-white truncate">
+                        {activeLens.model}
+                      </h3>
+                      <span className="text-[10px] font-mono text-sky-300/90 whitespace-nowrap">
+                        {activeLens.mountType} · T{activeLens.maxApertureTStop} · Ø
+                        {activeLens.imageCircleMm}mm · {activeLens.transmissionEfficiencyPct}% Trans.
+                      </span>
+                    </div>
+                    <p className="text-[10px] font-mono text-slate-400 truncate">
+                      {activeLens.manufacturer} · {activeLens.coatingType} · {activeLens.elementCount}E/
+                      {activeLens.groupCount}G · Close Focus {activeLens.closeFocusM}m
                     </p>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-sky-400/10 border border-sky-400/30 text-sky-300">
-                    {activeLens.anamorphicSqueeze > 1.05
-                      ? `${activeLens.anamorphicSqueeze}× Anamorphic`
-                      : 'Spherical Cinema'}
-                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateParam('focalLengthMm', activeLens.focalLengthMm);
+                      onUpdateParam('anamorphicSqueeze', activeLens.anamorphicSqueeze);
+                      onUpdateParam('focusBreathing', activeLens.focusBreathingFactor);
+                      onUpdateParam('sharpness', activeLens.centerSharpness);
+                      onUpdateParam('chromaticAberration', activeLens.chromaticAberration);
+                      onUpdateParam('distortionK1', activeLens.distortionK1);
+                      onUpdateParam('focusDistanceM', Math.max(1.5, activeLens.closeFocusM));
+                    }}
+                    title="Reset Lens Controls to Optical Profile Defaults"
+                    className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-mono text-slate-300 hover:text-white transition-colors whitespace-nowrap"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                    <span>Reset</span>
+                  </button>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 text-center font-mono">
-                  <div className="bg-white/5 p-2 rounded-xl border border-white/5">
-                    <span className="text-[9px] text-slate-400 block uppercase">Max Aperture</span>
-                    <span className="text-xs font-bold text-slate-100">
-                      T{activeLens.maxApertureTStop}
-                    </span>
-                  </div>
-                  <div className="bg-white/5 p-2 rounded-xl border border-white/5">
-                    <span className="text-[9px] text-slate-400 block uppercase">Image Circle</span>
-                    <span className="text-xs font-bold text-slate-100">
-                      Ø{activeLens.imageCircleMm}mm
-                    </span>
-                  </div>
-                  <div className="bg-white/5 p-2 rounded-xl border border-white/5">
-                    <span className="text-[9px] text-slate-400 block uppercase">Iris Blades</span>
-                    <span className="text-xs font-bold text-slate-100">
-                      {activeLens.irisBlades} Blades
-                    </span>
-                  </div>
-                </div>
+                {/* 2-Column Integrated Lens & Manual Focus Control Deck */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-2 font-mono text-xs">
+                  {/* Left Column: Manual Focus, Peaking, Focal Length & Desqueeze */}
+                  <div className="flex flex-col gap-2">
+                    {/* Manual Focus Pull */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <label htmlFor="lens-manual-focus" className="text-sky-300 font-semibold">
+                          Manual Focus
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-slate-400 tabular-nums">
+                            DoF {opticalMetrics.totalDofM >= 99 ? '∞' : `${opticalMetrics.totalDofM}m`}
+                          </span>
+                          <span className="text-white font-bold tabular-nums">
+                            {params.focusDistanceM >= 29.5
+                              ? '∞'
+                              : `${params.focusDistanceM.toFixed(1)}m`}
+                          </span>
+                        </div>
+                      </div>
+                      <input
+                        id="lens-manual-focus"
+                        type="range"
+                        min={Math.max(0.3, Number(activeLens.closeFocusM.toFixed(1)))}
+                        max={30}
+                        step={0.1}
+                        value={Math.max(activeLens.closeFocusM, params.focusDistanceM)}
+                        onChange={(e) =>
+                          onUpdateParam('focusDistanceM', parseFloat(e.target.value))
+                        }
+                        aria-label="Manual Focus Distance"
+                        className="studio-slider w-full"
+                      />
+                      <div className="flex items-center justify-between gap-1 pt-0.5">
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {[
+                            { label: `${activeLens.closeFocusM}m`, val: activeLens.closeFocusM },
+                            { label: '1.5m', val: 1.5 },
+                            { label: '3m', val: 3.0 },
+                            { label: '8m', val: 8.0 },
+                            { label: '∞', val: 30.0 },
+                          ].map((preset) => (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              onClick={() => onUpdateParam('focusDistanceM', preset.val)}
+                              className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors whitespace-nowrap ${
+                                Math.abs(params.focusDistanceM - preset.val) < 0.15
+                                  ? 'bg-sky-400 text-slate-950 border-sky-300 font-bold'
+                                  : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
 
-                {/* Desqueeze Ratio Fast Controls */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-[10px] text-slate-400 uppercase font-mono mr-1">
-                    Desqueeze:
-                  </span>
-                  {[1.0, 1.33, 1.5, 2.0].map((sq) => (
-                    <button
-                      key={sq}
-                      type="button"
-                      onClick={() => onUpdateParam('anamorphicSqueeze', sq)}
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono transition-colors ${
-                        Math.abs(params.anamorphicSqueeze - sq) < 0.05
-                          ? 'bg-sky-400 text-slate-950 font-bold'
-                          : 'bg-white/5 text-slate-300 hover:bg-white/10'
-                      }`}
-                    >
-                      {sq}×
-                    </button>
-                  ))}
+                        <button
+                          type="button"
+                          onClick={() => onUpdateParam('focusPeaking', !params.focusPeaking)}
+                          aria-pressed={params.focusPeaking}
+                          title="Highlight sharp focus edges in viewfinder"
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold border transition-colors whitespace-nowrap shrink-0 ${
+                            params.focusPeaking
+                              ? 'bg-emerald-400 text-slate-950 border-emerald-300'
+                              : 'bg-white/5 border-white/15 text-slate-300 hover:bg-white/10'
+                          }`}
+                        >
+                          <Eye className="w-2.5 h-2.5" />
+                          <span>Peak</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Focal Length Override */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <label htmlFor="lens-focal-length" className="text-slate-300">
+                          Focal Length
+                        </label>
+                        <span className="text-slate-200 font-bold tabular-nums">
+                          {Math.round(params.focalLengthMm)}mm · {opticalMetrics.horizontalFovDeg}° HFOV
+                        </span>
+                      </div>
+                      <input
+                        id="lens-focal-length"
+                        type="range"
+                        min={14}
+                        max={135}
+                        step={1}
+                        value={params.focalLengthMm}
+                        onChange={(e) =>
+                          onUpdateParam('focalLengthMm', parseInt(e.target.value, 10))
+                        }
+                        aria-label="Focal Length"
+                        className="studio-slider w-full"
+                      />
+                    </div>
+
+                    {/* Desqueeze Ratio */}
+                    <div className="flex items-center justify-between gap-1.5 pt-0.5">
+                      <span className="text-[10px] text-slate-400 uppercase whitespace-nowrap">
+                        Desqueeze:
+                      </span>
+                      <div className="flex items-center gap-1 flex-wrap justify-end">
+                        {[1.0, 1.33, 1.5, 1.8, 2.0].map((sq) => (
+                          <button
+                            key={sq}
+                            type="button"
+                            onClick={() => onUpdateParam('anamorphicSqueeze', sq)}
+                            className={`px-2 py-0.5 rounded text-[10px] border transition-colors whitespace-nowrap ${
+                              Math.abs(params.anamorphicSqueeze - sq) < 0.05
+                                ? 'bg-sky-400 text-slate-950 border-sky-300 font-bold'
+                                : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                            }`}
+                          >
+                            {sq}×
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Integrated Lens Optics & Glass Spectral Transmission */}
+                  <div className="flex flex-col gap-2">
+                    {/* Focus Breathing */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <label htmlFor="lens-breathing" className="text-slate-300">
+                          Focus Breathing
+                        </label>
+                        <span className="text-sky-300 font-bold tabular-nums">
+                          {Math.round(params.focusBreathing * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        id="lens-breathing"
+                        type="range"
+                        min={0}
+                        max={0.5}
+                        step={0.01}
+                        value={params.focusBreathing}
+                        onChange={(e) =>
+                          onUpdateParam('focusBreathing', parseFloat(e.target.value))
+                        }
+                        aria-label="Focus Breathing"
+                        className="studio-slider w-full"
+                      />
+                    </div>
+
+                    {/* Optical Sharpness & Micro-Contrast */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <label htmlFor="lens-sharpness" className="text-slate-300">
+                          Optical Sharpness (MTF)
+                        </label>
+                        <span className="text-sky-300 font-bold tabular-nums">
+                          {Math.round(params.sharpness * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        id="lens-sharpness"
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={params.sharpness}
+                        onChange={(e) => onUpdateParam('sharpness', parseFloat(e.target.value))}
+                        aria-label="Optical Sharpness"
+                        className="studio-slider w-full"
+                      />
+                    </div>
+
+                    {/* Chromatic Aberration & Distortion Row */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <label htmlFor="lens-ca-slider" className="text-slate-300">
+                            Chromatic Fringing
+                          </label>
+                          <span className="text-sky-300 font-bold tabular-nums">
+                            {Math.round(params.chromaticAberration * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          id="lens-ca-slider"
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={params.chromaticAberration}
+                          onChange={(e) =>
+                            onUpdateParam('chromaticAberration', parseFloat(e.target.value))
+                          }
+                          aria-label="Chromatic Aberration"
+                          className="studio-slider w-full"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <label htmlFor="lens-dist-slider" className="text-slate-300">
+                            Distortion k₁
+                          </label>
+                          <span className="text-sky-300 font-bold tabular-nums">
+                            {params.distortionK1 >= 0 ? '+' : ''}
+                            {Math.round(params.distortionK1 * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          id="lens-dist-slider"
+                          type="range"
+                          min={-0.4}
+                          max={0.4}
+                          step={0.01}
+                          value={params.distortionK1}
+                          onChange={(e) =>
+                            onUpdateParam('distortionK1', parseFloat(e.target.value))
+                          }
+                          aria-label="Optical Distortion"
+                          className="studio-slider w-full"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Glass Spectral Transmission Telemetry Strip */}
+                    <div className="pt-1.5 border-t border-white/10 flex items-center justify-between gap-2 text-[10px]">
+                      <span className="text-slate-400 uppercase whitespace-nowrap">
+                        Glass Trans. RGB:
+                      </span>
+                      <div className="flex items-center gap-2.5 tabular-nums">
+                        <span className="text-rose-300">
+                          R {(activeLens.spectralTransmissionRgb[0] * 100).toFixed(0)}%
+                        </span>
+                        <span className="text-emerald-300">
+                          G {(activeLens.spectralTransmissionRgb[1] * 100).toFixed(0)}%
+                        </span>
+                        <span className="text-sky-300">
+                          B {(activeLens.spectralTransmissionRgb[2] * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1061,8 +1289,8 @@ export function CinemaControlConsole({
 
                 <p className="text-[10px] text-amber-300/90 leading-snug">
                   {params.anamorphicSqueeze > 1.08
-                    ? `Anamorphic (${params.anamorphicSqueeze.toFixed(1)}×): Cylindrical horizontal streak flares, oval ghosts & elliptical halo extracted live from captured highlights.`
-                    : `Spherical (1.0×): ${params.irisBlades ?? activeLens.irisBlades}-blade radial diffraction starbursts, circular 1:1 ghosts & isotropic veiling glare extracted live from captured highlights.`}
+                    ? `Anamorphic (${params.anamorphicSqueeze.toFixed(1)}×): Full-width cylindrical chromatic streaks with hot incandescent core, dispersive 2:1 caustic ghosts & barrel arc from captured point lights.`
+                    : `Spherical (1.0×): ${params.irisBlades ?? activeLens.irisBlades}-blade Fraunhofer RGB-dispersed starbursts, circular caustic ghosts & veiling scatter from captured point lights.`}
                 </p>
 
                 <div className="flex items-center justify-between">
@@ -1099,52 +1327,319 @@ export function CinemaControlConsole({
                   aria-label="Veiling Glare Scattering"
                 />
 
-                {/* Streak Color Preset Pills */}
+                {/* Cinema Optical Coating Presets */}
                 <div className="flex items-center gap-1.5 flex-wrap pt-1">
-                  <span className="text-[10px] text-slate-400 uppercase mr-1">Coating Tint:</span>
+                  <span className="text-[10px] text-slate-400 uppercase mr-1">Coating:</span>
                   <button
                     type="button"
                     onClick={() => {
-                      onUpdateParam('flareTint', [0.2, 0.4, 1.0]);
-                      onUpdateParam('flareIntensity', 1.2);
+                      onUpdateParam('flareTint', [0.16, 0.52, 1.0]);
+                      onUpdateParam('flareIntensity', 1.25);
                     }}
                     className="px-2.5 py-0.5 rounded-full text-[10px] bg-sky-500/20 border border-sky-400/40 text-sky-300 hover:bg-sky-500/30"
                   >
-                    Classic Blue Streak
+                    Cobalt Blue
                   </button>
                   <button
                     type="button"
                     onClick={() => {
-                      onUpdateParam('flareTint', [1.0, 0.65, 0.2]);
-                      onUpdateParam('flareIntensity', 1.0);
+                      onUpdateParam('flareTint', [1.0, 0.7, 0.22]);
+                      onUpdateParam('flareIntensity', 1.15);
                     }}
                     className="px-2.5 py-0.5 rounded-full text-[10px] bg-amber-500/20 border border-amber-400/40 text-amber-300 hover:bg-amber-500/30"
                   >
-                    Warm Amber Halo
+                    Golden Atlas
                   </button>
                   <button
                     type="button"
                     onClick={() => {
-                      onUpdateParam('flareTint', [1.0, 1.0, 1.0]);
-                      onUpdateParam('flareIntensity', 0.7);
+                      onUpdateParam('flareTint', [0.14, 0.84, 0.94]);
+                      onUpdateParam('flareIntensity', 1.2);
+                    }}
+                    className="px-2.5 py-0.5 rounded-full text-[10px] bg-cyan-500/20 border border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/30"
+                  >
+                    Teal Hawk
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateParam('flareTint', [1.0, 0.58, 0.26]);
+                      onUpdateParam('flareIntensity', 1.05);
+                    }}
+                    className="px-2.5 py-0.5 rounded-full text-[10px] bg-orange-500/20 border border-orange-400/40 text-orange-300 hover:bg-orange-500/30"
+                  >
+                    Amber K-35
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateParam('flareTint', [0.95, 0.97, 1.0]);
+                      onUpdateParam('flareIntensity', 0.85);
                     }}
                     className="px-2.5 py-0.5 rounded-full text-[10px] bg-white/10 border border-white/20 text-slate-200 hover:bg-white/15"
                   >
-                    Natural Neutral
+                    Natural Clean
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB 5: SENSOR SPECTRAL CURVES VISUALIZER */}
-          {activeTab === 'spectral' && (
-            <div className="max-w-4xl mx-auto">
-              <SpectralSensitivityVisualizer
-                activeCamera={activeCamera}
-                activeLens={activeLens}
-                onSelectCamera={onSelectCamera}
-              />
+          {/* TAB 5: COLOR CONTROL & WHITE BALANCE CONSOLE */}
+          {activeTab === 'color' && (
+            <div className="max-w-5xl mx-auto bg-[#070a11]/90 rounded-2xl border border-purple-500/25 p-3.5 sm:p-4 shadow-[inset_0_1px_1px_rgba(255,255,255,0.08)] space-y-3">
+              {/* Color Deck Header */}
+              <div className="flex items-center justify-between gap-2 flex-wrap border-b border-white/10 pb-2">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="text-[11px] sm:text-xs font-mono font-bold uppercase tracking-wider text-purple-300 whitespace-nowrap">
+                    Color &amp; White Balance
+                  </span>
+                  <span className="hidden sm:inline text-[10px] font-mono text-slate-400 truncate">
+                    {activeCamera.colorSpace} · {activeCamera.transferCurve}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateParam(
+                        'spectralReconstructionMode',
+                        params.spectralReconstructionMode === false
+                      )
+                    }
+                    aria-pressed={params.spectralReconstructionMode !== false}
+                    title="Switch between physical sensor color reconstruction and legacy 3x3 matrix"
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-mono border transition-colors whitespace-nowrap ${
+                      params.spectralReconstructionMode !== false
+                        ? 'bg-purple-500/20 border-purple-400/50 text-purple-200 font-semibold'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {params.spectralReconstructionMode !== false
+                      ? 'Color Science: Physical'
+                      : 'Color Science: Matrix'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={toggleBwMode}
+                    aria-pressed={isBwActive}
+                    className={`px-2.5 py-0.5 rounded-md text-[10px] font-mono font-bold border transition-colors whitespace-nowrap ${
+                      isBwActive
+                        ? 'bg-white text-slate-950 border-white shadow'
+                        : 'bg-white/5 border-white/15 text-slate-300 hover:bg-white/10'
+                    }`}
+                  >
+                    {isBwActive ? 'B&W ON' : 'B&W OFF'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateParam('colorTemperatureShift', 0);
+                      onUpdateParam('tintShift', 0);
+                      onUpdateParam('saturation', 1.0);
+                      onUpdateParam('contrast', 1.0);
+                      onUpdateParam('highlightRolloff', 0.5);
+                      onUpdateParam('exposureCompensationEv', 0);
+                    }}
+                    title="Reset Color & White Balance to Neutral"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-mono text-slate-300 hover:text-white transition-colors whitespace-nowrap"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                    <span>Reset</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 2-Column Color Grading Sliders */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2.5 font-mono text-xs">
+                {/* Left Column: White Balance, Tint & Exposure Trim */}
+                <div className="space-y-2.5">
+                  {/* White Balance Temperature */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <label htmlFor="color-wb-temp" className="text-slate-200">
+                        White Balance (Kelvin)
+                      </label>
+                      <span className="text-amber-300 font-bold tabular-nums">
+                        {Math.round(5600 + params.colorTemperatureShift * 4800)}K
+                      </span>
+                    </div>
+                    <input
+                      id="color-wb-temp"
+                      type="range"
+                      min={-0.5}
+                      max={0.5}
+                      step={0.01}
+                      value={params.colorTemperatureShift}
+                      onChange={(e) =>
+                        onUpdateParam('colorTemperatureShift', parseFloat(e.target.value))
+                      }
+                      aria-label="White Balance Temperature"
+                      className="studio-slider w-full"
+                    />
+                    <div className="flex items-center gap-1 pt-0.5 flex-wrap">
+                      {[
+                        { label: '3200K', val: -0.5 },
+                        { label: '4400K', val: -0.25 },
+                        { label: '5600K', val: 0.0 },
+                        { label: '6800K', val: 0.25 },
+                        { label: '8000K', val: 0.5 },
+                      ].map((wb) => (
+                        <button
+                          key={wb.label}
+                          type="button"
+                          onClick={() => onUpdateParam('colorTemperatureShift', wb.val)}
+                          className={`px-2 py-0.5 rounded text-[10px] border transition-colors whitespace-nowrap ${
+                            Math.abs(params.colorTemperatureShift - wb.val) < 0.03
+                              ? 'bg-purple-400 text-slate-950 border-purple-300 font-bold'
+                              : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                          }`}
+                        >
+                          {wb.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Green-Magenta Tint */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <label htmlFor="color-wb-tint" className="text-slate-200">
+                        Tint (Green ↔ Magenta)
+                      </label>
+                      <span className="text-purple-300 font-bold tabular-nums">
+                        {params.tintShift >= 0 ? '+' : ''}
+                        {Math.round(params.tintShift * 100)}
+                      </span>
+                    </div>
+                    <input
+                      id="color-wb-tint"
+                      type="range"
+                      min={-0.5}
+                      max={0.5}
+                      step={0.01}
+                      value={params.tintShift}
+                      onChange={(e) => onUpdateParam('tintShift', parseFloat(e.target.value))}
+                      aria-label="Color Tint"
+                      className="studio-slider w-full"
+                    />
+                  </div>
+
+                  {/* Exposure Compensation */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <label htmlFor="color-exp-comp" className="text-slate-200">
+                        Exposure Trim (EV)
+                      </label>
+                      <span className="text-emerald-300 font-bold tabular-nums">
+                        {(params.exposureCompensationEv ?? 0) >= 0 ? '+' : ''}
+                        {(params.exposureCompensationEv ?? 0).toFixed(2)} EV
+                      </span>
+                    </div>
+                    <input
+                      id="color-exp-comp"
+                      type="range"
+                      min={-2.5}
+                      max={2.5}
+                      step={0.05}
+                      value={params.exposureCompensationEv ?? 0}
+                      onChange={(e) =>
+                        onUpdateParam('exposureCompensationEv', parseFloat(e.target.value))
+                      }
+                      aria-label="Exposure Compensation EV"
+                      className="studio-slider w-full"
+                    />
+                  </div>
+                </div>
+
+                {/* Right Column: Saturation, Contrast & Highlight Rolloff */}
+                <div className="space-y-2.5">
+                  {/* Saturation */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <label htmlFor="color-saturation" className="text-slate-200">
+                        Chroma Saturation
+                      </label>
+                      <span className="text-purple-300 font-bold tabular-nums">
+                        {Math.round(params.saturation * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      id="color-saturation"
+                      type="range"
+                      min={0}
+                      max={1.8}
+                      step={0.02}
+                      value={params.saturation}
+                      onChange={(e) => onUpdateParam('saturation', parseFloat(e.target.value))}
+                      aria-label="Chroma Saturation"
+                      className="studio-slider w-full"
+                    />
+                  </div>
+
+                  {/* Contrast */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <label htmlFor="color-contrast" className="text-slate-200">
+                        Tone Contrast
+                      </label>
+                      <span className="text-sky-300 font-bold tabular-nums">
+                        {params.contrast.toFixed(2)}×
+                      </span>
+                    </div>
+                    <input
+                      id="color-contrast"
+                      type="range"
+                      min={0.6}
+                      max={1.6}
+                      step={0.02}
+                      value={params.contrast}
+                      onChange={(e) => onUpdateParam('contrast', parseFloat(e.target.value))}
+                      aria-label="Tone Contrast"
+                      className="studio-slider w-full"
+                    />
+                  </div>
+
+                  {/* Highlight Rolloff */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <label htmlFor="color-rolloff" className="text-slate-200">
+                        Highlight Shoulder Rolloff
+                      </label>
+                      <span className="text-amber-300 font-bold tabular-nums">
+                        {Math.round(params.highlightRolloff * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      id="color-rolloff"
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.02}
+                      value={params.highlightRolloff}
+                      onChange={(e) =>
+                        onUpdateParam('highlightRolloff', parseFloat(e.target.value))
+                      }
+                      aria-label="Highlight Shoulder Rolloff"
+                      className="studio-slider w-full"
+                    />
+                  </div>
+
+                  {/* Active Color Pipeline Summary */}
+                  <div className="pt-1 border-t border-white/10 flex items-center justify-between text-[10px] text-slate-400">
+                    <span>Active Print / LUT:</span>
+                    <span className="text-slate-200 truncate max-w-[240px]">
+                      {activePrintStock.name}
+                      {(params.hollywoodLutId ?? 0) > 0
+                        ? ` · ${getHollywoodLutByShaderId(params.hollywoodLutId ?? 0).shortName}`
+                        : ''}
+                    </span>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1359,6 +1854,7 @@ export function CinemaControlConsole({
               </div>
             </div>
           )}
+            </div>
           </div>
         </div>
       )}

@@ -50,11 +50,50 @@ float hash12(vec2 p) {
 }
 
 float evalCamSpecular(vec3 col) {
-  float peak = max(col.r, max(col.g, col.b));
-  float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-  float sig = mix(lum, peak, 0.45);
-  float s = smoothstep(0.86, 0.99, sig);
-  return s * s * s * (0.65 + 0.65 * peak);
+  vec3 lin = pow(max(vec3(0.0), col), vec3(2.2));
+  float linLum = dot(lin, vec3(0.2126, 0.7152, 0.0722));
+  float linPeak = max(lin.r, max(lin.g, lin.b));
+  float incand = mix(linLum, linPeak, 0.22);
+  float core = smoothstep(0.66, 0.985, incand);
+  float hot = smoothstep(0.84, 0.995, linLum);
+  return core * core * (0.45 + 0.85 * hot);
+}
+
+float evalCamPointSpecular(vec3 cCore, vec3 cBgA, vec3 cBgB) {
+  vec3 linCore = pow(max(vec3(0.0), cCore), vec3(2.2));
+  vec3 linBgA = pow(max(vec3(0.0), cBgA), vec3(2.2));
+  vec3 linBgB = pow(max(vec3(0.0), cBgB), vec3(2.2));
+  float linLum = dot(linCore, vec3(0.2126, 0.7152, 0.0722));
+  float linPeak = max(linCore.r, max(linCore.g, linCore.b));
+  if (linLum < 0.64 || linPeak < 0.74) return 0.0;
+
+  float bgLum = 0.5 * (
+    dot(linBgA, vec3(0.2126, 0.7152, 0.0722)) +
+    dot(linBgB, vec3(0.2126, 0.7152, 0.0722))
+  );
+  float localPop = clamp((linLum - bgLum) * 2.6, 0.0, 1.0);
+  float wideSuppress = 1.0 - 0.65 * smoothstep(0.54, 0.88, bgLum);
+  float incand = mix(linLum, linPeak, 0.20);
+  float hotCore = pow(smoothstep(0.66, 0.985, incand), 2.2);
+  float clipCore = pow(smoothstep(0.84, 0.995, linLum), 2.1);
+
+  return max(
+    hotCore * (0.30 + 0.70 * localPop) * wideSuppress,
+    clipCore * mix(0.42, 1.0, wideSuppress)
+  );
+}
+
+vec3 compositeCamFlare(vec3 baseCol, vec3 rawFlare) {
+  vec3 phys = max(vec3(0.0), rawFlare);
+  float peak = max(phys.r, max(phys.g, phys.b));
+  if (peak < 0.001) return baseCol;
+  vec3 linBase = pow(max(vec3(0.0), baseCol), vec3(2.2));
+  vec3 linAdded = linBase + phys;
+  vec3 over = max(vec3(0.0), linAdded - vec3(0.68));
+  vec3 shouldered = min(linAdded, vec3(0.68)) + (over / (vec3(1.0) + over * 0.92));
+  float mask = smoothstep(0.001, 0.024, peak);
+  vec3 finalLin = mix(linBase, shouldered, mask);
+  return pow(clamp(finalLin, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
 }
 
 ${HOLLYWOOD_CINEMA_LUT_GLSL_MODULE}
@@ -151,82 +190,133 @@ void main() {
     col = applyHollywoodCinemaLut(col, float(u_lutMode), blend);
   }
 
-  // Live Camera-Captured Anamorphic Cylindrical Streak vs Spherical Starburst & Halo (Post-tonemap screen glow)
+  // Live Camera-Captured Anamorphic Cylindrical Streak, Dispersive Ghosts & Fraunhofer Spherical Starburst
   vec3 camGlare = vec3(0.0);
   float glareJitter = hash12(v_uv * 913.7 + vec2(u_time * 0.01)) - 0.5;
+  vec3 anamCoatTint = vec3(0.16, 0.54, 1.0);
+
   if (anamWeight > 0.02) {
-    vec3 coreStreak = vec3(0.0);
-    vec3 auraStreak = vec3(0.0);
-    float maxWing = clamp(0.28 / max(0.65, canvasAspect), 0.22, 0.42);
-    float slitY = 0.0015;
-    float auraY = 0.0052;
+    // Continuous, Jitter-Integrated, Soft Blurry Anamorphic Cylindrical Beam (zero chain dots, zero plastic edges)
+    vec3 softStreak = vec3(0.0);
+    float maxWing = clamp(0.44 / max(0.75, canvasAspect), 0.30, 0.44);
+    float bgOffsetY = 0.135;
+    const int CAM_HALF = 48;
+    float invSteps = 1.0 / float(CAM_HALF);
+    float blurY1 = 0.009;
+    float blurY2 = 0.020;
 
-    for (int k = -24; k <= 24; k++) {
-      if (k == 0) continue;
-      float nk = (float(k) + glareJitter * 0.85) / 24.0;
-      float dx = nk * maxWing;
-      vec2 baseUV = v_uv + vec2(dx, 0.0);
-      if (baseUV.x < 0.002 || baseUV.x > 0.998 || baseUV.y < 0.002 || baseUV.y > 0.998) continue;
+    for (int k = -CAM_HALF; k <= CAM_HALF; k++) {
+      float t = (float(k) + glareJitter) * invSteps;
+      vec2 baseUV = v_uv + vec2(t * maxWing, 0.0);
+      if (baseUV.x < 0.003 || baseUV.x > 0.997 || baseUV.y < 0.003 || baseUV.y > 0.997) continue;
 
-      vec3 cMid = texture(u_cameraTex, mapToSourceUV(baseUV)).rgb;
-      vec3 cTop = texture(u_cameraTex, mapToSourceUV(clamp(baseUV + vec2(0.0, slitY), vec2(0.002), vec2(0.998)))).rgb;
-      vec3 cBot = texture(u_cameraTex, mapToSourceUV(clamp(baseUV - vec2(0.0, slitY), vec2(0.002), vec2(0.998)))).rgb;
-      vec3 cSheathU = texture(u_cameraTex, mapToSourceUV(clamp(baseUV + vec2(0.0, auraY), vec2(0.002), vec2(0.998)))).rgb;
-      vec3 cSheathD = texture(u_cameraTex, mapToSourceUV(clamp(baseUV - vec2(0.0, auraY), vec2(0.002), vec2(0.998)))).rgb;
-      vec3 slitCol = cMid * 0.56 + cTop * 0.22 + cBot * 0.22;
-      vec3 sheathCol = (cSheathU + cSheathD) * 0.5;
+      vec3 c0 = texture(u_cameraTex, mapToSourceUV(baseUV)).rgb;
+      vec3 cU1 = texture(u_cameraTex, mapToSourceUV(clamp(baseUV + vec2(0.0, blurY1), vec2(0.002), vec2(0.998)))).rgb;
+      vec3 cD1 = texture(u_cameraTex, mapToSourceUV(clamp(baseUV - vec2(0.0, blurY1), vec2(0.002), vec2(0.998)))).rgb;
+      vec3 cU2 = texture(u_cameraTex, mapToSourceUV(clamp(baseUV + vec2(0.0, blurY2), vec2(0.002), vec2(0.998)))).rgb;
+      vec3 cD2 = texture(u_cameraTex, mapToSourceUV(clamp(baseUV - vec2(0.0, blurY2), vec2(0.002), vec2(0.998)))).rgb;
+      vec3 slitCol = c0 * 0.30 + (cU1 + cD1) * 0.24 + (cU2 + cD2) * 0.11;
+      if (dot(slitCol, vec3(0.2126, 0.7152, 0.0722)) <= 0.76) continue;
 
-      float specCore = evalCamSpecular(slitCol);
-      float specAura = evalCamSpecular(sheathCol);
-      float srcPeak = max(slitCol.r, max(slitCol.g, slitCol.b));
-      vec3 cyanAnam = mix(slitCol, vec3(0.18, 0.55, 1.0) * max(0.45, srcPeak * 1.25), 0.76);
-      coreStreak += (cyanAnam + slitCol * 0.22) * (specCore * exp(-abs(nk) * 2.75));
-      auraStreak += (sheathCol * vec3(0.22, 0.58, 1.0) * 1.08) * (specAura * exp(-abs(nk) * 1.60));
+      vec3 cBgU = texture(u_cameraTex, mapToSourceUV(clamp(baseUV + vec2(0.0, bgOffsetY), vec2(0.002), vec2(0.998)))).rgb;
+      vec3 cBgD = texture(u_cameraTex, mapToSourceUV(clamp(baseUV - vec2(0.0, bgOffsetY), vec2(0.002), vec2(0.998)))).rgb;
+      float specVal = evalCamPointSpecular(slitCol, cBgU, cBgD);
+      if (specVal <= 0.002) continue;
+
+      float absT = abs(t);
+      float tipTaper = pow(clamp(1.0 - absT, 0.0, 1.0), 1.45);
+      float env = exp(-absT * 2.25) * tipTaper;
+      float wingMix = smoothstep(0.04, 0.28, absT);
+      vec3 streakColor = mix(mix(slitCol, vec3(1.0), 0.38), anamCoatTint * 1.18, wingMix);
+      softStreak += streakColor * (specVal * env * invSteps);
     }
-    camGlare += (coreStreak * 0.042 + auraStreak * 0.018) * anamWeight;
+
+    vec3 compressedStreak = (softStreak * 6.8) / (vec3(1.0) + softStreak * 3.4);
+    camGlare += compressedStreak * anamWeight;
+
+    // Soft Blurry Out-Of-Focus Conjugate Anamorphic Ghost (9-tap bokeh blur, zero sharp cutouts)
+    vec2 curOff = v_uv - vec2(0.5);
+    float radCur = length(vec2(curOff.x * canvasAspect, curOff.y));
+    vec2 gUvG = vec2(0.5) - curOff / 0.62;
+    if (gUvG.x > 0.03 && gUvG.x < 0.97 && gUvG.y > 0.03 && gUvG.y < 0.97) {
+      vec2 gBlur = vec2(0.032 / max(0.7, canvasAspect), 0.044);
+      vec3 gAcc = vec3(0.0);
+      float gW = 0.0;
+      for (int gx = -1; gx <= 1; gx++) {
+        for (int gy = -1; gy <= 1; gy++) {
+          vec2 off = vec2(float(gx) * gBlur.x, float(gy) * gBlur.y);
+          float w = (gx == 0 && gy == 0) ? 0.24 : ((gx == 0 || gy == 0) ? 0.12 : 0.07);
+          vec2 uvR = clamp(vec2(0.5) - curOff / 0.59 + off, vec2(0.01), vec2(0.99));
+          vec2 uvG = clamp(gUvG + off, vec2(0.01), vec2(0.99));
+          vec2 uvB = clamp(vec2(0.5) - curOff / 0.65 + off, vec2(0.01), vec2(0.99));
+          vec3 s = vec3(
+            texture(u_cameraTex, mapToSourceUV(uvR)).r,
+            texture(u_cameraTex, mapToSourceUV(uvG)).g,
+            texture(u_cameraTex, mapToSourceUV(uvB)).b
+          );
+          float sp = evalCamSpecular(s);
+          gAcc += s * (sp * w);
+          gW += w;
+        }
+      }
+      vec3 blurredGhost = gAcc / max(0.001, gW);
+      float gFade = 1.0 - smoothstep(0.54, 0.96, radCur);
+      camGlare += (blurredGhost * anamCoatTint * 1.15) * (0.16 * gFade * anamWeight);
+    }
   }
 
   if (sphericalWeight > 0.02) {
     vec3 starAccum = vec3(0.0);
-    float stopped = clamp((u_apertureFStop - 1.4) / 6.6, 0.32, 1.0);
-    float rayLen = mix(0.062, 0.125, stopped);
+    float stopped = clamp((u_apertureFStop - 1.4) / 6.6, 0.20, 1.0);
+    float rayLen = mix(0.085, 0.205, stopped);
+    const int CAM_STAR = 16;
+    float invStar = 1.0 / float(CAM_STAR);
     for (int rIdx = 0; rIdx < 3; rIdx++) {
-      float rayAng = 0.28 + float(rIdx) * 1.04719755;
-      vec2 rayDir = vec2(cos(rayAng) / canvasAspect, sin(rayAng));
-      vec2 perpDir = vec2(-rayDir.y, rayDir.x) * 0.0012;
-      for (int s = -9; s <= 9; s++) {
+      float rayAng = 0.26 + float(rIdx) * 1.04719755;
+      vec2 rayDir = vec2(cos(rayAng) / max(0.55, canvasAspect), sin(rayAng));
+      vec2 perpDir = normalize(vec2(-rayDir.y, rayDir.x)) * 0.0018;
+      for (int s = -CAM_STAR; s <= CAM_STAR; s++) {
         if (s == 0) continue;
-        float ns = (float(s) + glareJitter * 0.75) / 9.0;
-        vec2 tapUV = clamp(v_uv + rayDir * (ns * rayLen), vec2(0.002), vec2(0.998));
-        vec3 s0 = texture(u_cameraTex, mapToSourceUV(tapUV)).rgb;
-        vec3 s1 = texture(u_cameraTex, mapToSourceUV(clamp(tapUV + perpDir, vec2(0.002), vec2(0.998)))).rgb;
-        vec3 s2 = texture(u_cameraTex, mapToSourceUV(clamp(tapUV - perpDir, vec2(0.002), vec2(0.998)))).rgb;
-        vec3 sCol = s0 * 0.60 + (s1 + s2) * 0.20;
-        float spec = evalCamSpecular(sCol);
-        starAccum += sCol * (spec * exp(-abs(ns) * 2.40));
+        float t = float(s) * invStar;
+        vec2 uvG = v_uv + rayDir * (t * rayLen);
+        if (uvG.x < 0.002 || uvG.x > 0.998 || uvG.y < 0.002 || uvG.y > 0.998) continue;
+        vec3 sG0 = texture(u_cameraTex, mapToSourceUV(uvG)).rgb;
+        if (max(sG0.r, max(sG0.g, sG0.b)) <= 0.78) continue;
+
+        vec2 uvR = clamp(v_uv + rayDir * (t * rayLen * 1.068), vec2(0.002), vec2(0.998));
+        vec2 uvB = clamp(v_uv + rayDir * (t * rayLen * 0.932), vec2(0.002), vec2(0.998));
+        vec3 sBgU = texture(u_cameraTex, mapToSourceUV(clamp(uvG + perpDir * 30.0, vec2(0.002), vec2(0.998)))).rgb;
+        vec3 sBgD = texture(u_cameraTex, mapToSourceUV(clamp(uvG - perpDir * 30.0, vec2(0.002), vec2(0.998)))).rgb;
+        vec3 dispCol = vec3(
+          texture(u_cameraTex, mapToSourceUV(uvR)).r,
+          sG0.g,
+          texture(u_cameraTex, mapToSourceUV(uvB)).b
+        );
+        float spec = evalCamPointSpecular(dispCol, sBgU, sBgD);
+        float env = exp(-abs(t) * 2.15) * pow(clamp(1.0 - abs(t), 0.0, 1.0), 1.30);
+        starAccum += dispCol * (spec * env * invStar);
       }
     }
-    camGlare += starAccum * (0.030 * sphericalWeight * (0.72 + 0.55 * stopped));
+    camGlare += starAccum * (3.5 * sphericalWeight * (0.58 + 0.85 * stopped));
   }
 
   // Soft Captured-Highlight Veiling Halo (Circular isotropic on Spherical, Horizontally Elliptical on Anamorphic)
   vec3 haloAccum = vec3(0.0);
-  vec2 haloAniso = vec2(mix(1.0, 1.52, anamWeight), mix(1.0, 0.68, anamWeight));
+  vec2 haloAniso = vec2(mix(1.0, 1.66, anamWeight), mix(1.0, 0.62, anamWeight));
   for (int j = 0; j < 6; j++) {
     float ang = float(j) * 1.0471975;
-    vec2 hUv = clamp(v_uv + vec2(cos(ang) * haloAniso.x / canvasAspect, sin(ang) * haloAniso.y) * 0.040, vec2(0.002), vec2(0.998));
+    vec2 hUv = clamp(v_uv + vec2(cos(ang) * haloAniso.x / max(0.55, canvasAspect), sin(ang) * haloAniso.y) * 0.042, vec2(0.002), vec2(0.998));
     vec3 hCol = texture(u_cameraTex, mapToSourceUV(hUv)).rgb;
     haloAccum += hCol * evalCamSpecular(hCol);
   }
-  camGlare += (haloAccum / 6.0) * mix(0.14, 0.10, anamWeight);
-  camGlare = camGlare / (vec3(1.0) + camGlare * 0.90);
+  camGlare += (haloAccum / 6.0) * mix(vec3(1.0), anamCoatTint, anamWeight * 0.42) * mix(0.14, 0.10, anamWeight);
 
   float bwMix = clamp(u_bwAmount, 0.0, 1.0);
   if ((u_lutMode == 8 && blend > 0.001) || bwMix > 0.001) {
     float glareLum = dot(camGlare, vec3(0.2126, 0.7152, 0.0722));
     camGlare = mix(camGlare, vec3(glareLum), max(bwMix, u_lutMode == 8 ? blend : 0.0));
   }
-  col = clamp(col + camGlare * (1.0 - col * 0.35), vec3(0.0), vec3(1.0));
+  col = compositeCamFlare(col, camGlare);
 
   // User-controlled B&W Panchromatic Monochrome (overrides LUT chroma while keeping LUT tonal contrast)
   if (bwMix > 0.001) {

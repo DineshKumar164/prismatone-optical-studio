@@ -163,18 +163,59 @@ float evalPolygonalAperture(float angle, float blades, float stoppedDownAmount) 
   return mix(1.0, polyRadius, stoppedDownAmount);
 }
 
-// Extracts optical specular highlight emission strictly from true light sources & intense glints
+// Single-tap specular highlight energy for ghosts, halos & diffraction spikes
 float evalCapturedSpecularEnergy(vec3 col) {
   float peak = max(col.r, max(col.g, col.b));
   float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-  float sig = mix(lum, peak, 0.45);
-  float s = smoothstep(0.86, 0.99, sig);
-  return s * s * s * (0.65 + 0.65 * peak);
+  float sig = mix(lum, peak, 0.55);
+  float core = smoothstep(0.84, 0.995, sig);
+  float hot = smoothstep(0.92, 1.0, peak);
+  return core * core * (0.38 + 0.92 * hot);
 }
 
-// Camera-Captured Lens Flare, Streaks, Cross-Axis Iris Ghosts & Veiling Glare
-// Driven 100% by bright light sources and reflections actually captured in sourceTex (zero artificial orbs).
-// Physically separates Anamorphic (cylindrical horizontal streaks + oval ghosts) from Spherical (isotropic halo + iris diffraction starburst).
+// Local-contrast-aware emitter extractor for anamorphic & starburst sources:
+// Precisely isolates true emissive bulbs, streetlamps, headlights & hot specular glints
+// while rejecting matte white paper signs, bright walls, overcast sky & faces.
+float evalPointSpecularEmitter(vec3 cCore, vec3 cBgA, vec3 cBgB) {
+  vec3 linCore = pow(max(vec3(0.0), cCore), vec3(2.2));
+  vec3 linBgA = pow(max(vec3(0.0), cBgA), vec3(2.2));
+  vec3 linBgB = pow(max(vec3(0.0), cBgB), vec3(2.2));
+  float linLum = dot(linCore, vec3(0.2126, 0.7152, 0.0722));
+  float linPeak = max(linCore.r, max(linCore.g, linCore.b));
+  if (linLum < 0.72 || linPeak < 0.84) return 0.0;
+
+  float bgLum = 0.5 * (
+    dot(linBgA, vec3(0.2126, 0.7152, 0.0722)) +
+    dot(linBgB, vec3(0.2126, 0.7152, 0.0722))
+  );
+  float localPop = clamp((linLum - bgLum) * 3.6, 0.0, 1.0);
+  float compactness = 1.0 - smoothstep(0.42, 0.76, bgLum);
+  float incand = mix(linLum, linPeak, 0.18);
+  float hotCore = pow(smoothstep(0.76, 0.992, incand), 3.4);
+  float clipCore = pow(smoothstep(0.91, 0.998, linLum), 3.6);
+
+  return max(
+    hotCore * (0.22 + 0.78 * pow(localPop, 1.35)) * compactness,
+    clipCore * mix(0.03, 0.90, compactness)
+  );
+}
+
+// True Linear HDR Physical Photon Addition + Filmic Highlight Shoulder (untouched shadows stay 100% pure ink-black)
+vec3 compositeOpticalFlare(vec3 baseCol, vec3 rawFlare) {
+  vec3 phys = max(vec3(0.0), rawFlare);
+  float peak = max(phys.r, max(phys.g, phys.b));
+  if (peak < 0.001) return baseCol;
+  vec3 linBase = pow(max(vec3(0.0), baseCol), vec3(2.2));
+  vec3 linAdded = linBase + phys;
+  vec3 over = max(vec3(0.0), linAdded - vec3(0.68));
+  vec3 shouldered = min(linAdded, vec3(0.68)) + (over / (vec3(1.0) + over * 0.92));
+  float mask = smoothstep(0.001, 0.024, peak);
+  vec3 finalLin = mix(linBase, shouldered, mask);
+  return pow(clamp(finalLin, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
+}
+
+// Camera-Captured Lens Flare, Full-Width Anamorphic Streaks, Dispersive Iris Ghosts, Barrel Arc & Fraunhofer Starbursts
+// Driven 100% by bright light sources and specular reflections captured in sourceTex (zero fake light orbs).
 vec3 evaluateCapturedLensFlareAndGlare(
   sampler2D sourceTex,
   vec2 currentUV,
@@ -197,90 +238,188 @@ vec3 evaluateCapturedLensFlareAndGlare(
   float jitter = fract(sin(dot(currentUV * vec2(1298.98, 782.33), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
 
   // =========================================================================
-  // 1A. ANAMORPHIC CYLINDRICAL FRONT-ELEMENT HORIZONTAL STREAK FLARE
-  // Dense 28-step uniform wing sampling + sub-step micro-jitter removes all comb gaps
-  // and produces a continuous razor-crisp horizontal filament + soft outer sheath.
+  // 1A. ANAMORPHIC CYLINDRICAL FRONT-ELEMENT STREAK ENGINE
+  // Pass 1: Sub-Nyquist staggered filament core (72 steps/side x 2 sub-pixel taps)
+  // Pass 2: Continuous 5-tap vertical Gaussian optical sheath (zero scanlines/comb bars)
   // =========================================================================
   if (flareGain > 0.01 && anamWeight > 0.01) {
     vec3 coreStreak = vec3(0.0);
-    vec3 auraStreak = vec3(0.0);
-    float maxWing = clamp(0.20 * max(1.15, anamorphicSqueeze), 0.20, 0.42);
-    float slitY = 0.0015;
-    float auraY = 0.0052;
+    vec3 sheathStreak = vec3(0.0);
 
-    for (int k = -26; k <= 26; k++) {
+    // Full cinema widescreen reach scales with squeeze ratio (1.33x -> 0.40, 2.0x -> 0.50)
+    float maxWing = clamp(0.25 * max(1.15, anamorphicSqueeze), 0.34, 0.50);
+    float bgOffsetY = 0.062;
+
+    // Streak direction: dead-level horizontal by default (diffractionAngleDeg == 0), tilts if user dials custom angle
+    float streakRad = diffractionAngleDeg * 0.01745329;
+    vec2 axisDir = vec2(cos(streakRad), sin(streakRad) * canvasAspect);
+    vec2 perpDir = normalize(vec2(-sin(streakRad) / max(0.5, canvasAspect), cos(streakRad)));
+
+    // --- Pass 1: Velvety incandescent filament core (high-selectivity point emitters, zero scanlines) ---
+    const int HALF_STEPS = 72;
+    float invSteps = 1.0 / float(HALF_STEPS);
+    float quarterStep = 0.25 * invSteps * maxWing;
+    float coreBlurY = 0.0022;
+
+    for (int k = -HALF_STEPS; k <= HALF_STEPS; k++) {
       if (k == 0) continue;
-      float nk = (float(k) + jitter * 0.85) / 26.0;
-      float dx = nk * maxWing;
-      vec2 baseUV = currentUV + vec2(dx, 0.0);
+      float t = float(k) * invSteps;
+      vec2 baseUV = currentUV + axisDir * (t * maxWing);
+
       if (baseUV.x < 0.002 || baseUV.x > 0.998 || baseUV.y < 0.002 || baseUV.y > 0.998) continue;
 
-      vec3 cMid = texture(sourceTex, baseUV).rgb;
-      vec3 cTop = texture(sourceTex, clamp(baseUV + vec2(0.0, slitY), vec2(0.002), vec2(0.998))).rgb;
-      vec3 cBot = texture(sourceTex, clamp(baseUV - vec2(0.0, slitY), vec2(0.002), vec2(0.998))).rgb;
-      vec3 cSheathU = texture(sourceTex, clamp(baseUV + vec2(0.0, auraY), vec2(0.002), vec2(0.998))).rgb;
-      vec3 cSheathD = texture(sourceTex, clamp(baseUV - vec2(0.0, auraY), vec2(0.002), vec2(0.998))).rgb;
+      vec2 uvA = clamp(baseUV - axisDir * quarterStep, vec2(0.002), vec2(0.998));
+      vec2 uvB = clamp(baseUV + axisDir * quarterStep, vec2(0.002), vec2(0.998));
+      vec3 cA = texture(sourceTex, uvA).rgb;
+      vec3 cB = texture(sourceTex, uvB).rgb;
 
-      vec3 slitCol = cMid * 0.56 + cTop * 0.22 + cBot * 0.22;
-      vec3 sheathCol = (cSheathU + cSheathD) * 0.5;
+      float pA = max(cA.r, max(cA.g, cA.b));
+      float pB = max(cB.r, max(cB.g, cB.b));
+      if (max(pA, pB) <= 0.88) continue;
 
-      float specCore = evalCapturedSpecularEnergy(slitCol);
-      float specAura = evalCapturedSpecularEnergy(sheathCol);
+      // Smooth 3-tap vertical tent (-coreBlurY, 0, +coreBlurY) prevents 1px horizontal row striping
+      vec3 cMid = 0.5 * (cA + cB);
+      vec3 cUp = texture(sourceTex, clamp(baseUV + perpDir * coreBlurY, vec2(0.002), vec2(0.998))).rgb;
+      vec3 cDn = texture(sourceTex, clamp(baseUV - perpDir * coreBlurY, vec2(0.002), vec2(0.998))).rgb;
+      vec3 cBgU = texture(sourceTex, clamp(baseUV + perpDir * bgOffsetY, vec2(0.002), vec2(0.998))).rgb;
+      vec3 cBgD = texture(sourceTex, clamp(baseUV - perpDir * bgOffsetY, vec2(0.002), vec2(0.998))).rgb;
 
-      float coreEnv = exp(-abs(nk) * 2.85);
-      float auraEnv = exp(-abs(nk) * 1.65);
+      float rawSpec =
+        evalPointSpecularEmitter(cMid, cBgU, cBgD) * 0.50 +
+        (evalPointSpecularEmitter(cUp, cBgU, cBgD) + evalPointSpecularEmitter(cDn, cBgU, cBgD)) * 0.25;
+      // Power-shaping suppresses diffuse mid-bright lantern/wall clutter while keeping bare bulbs & headlights blazing
+      float specCore = pow(clamp(rawSpec, 0.0, 1.0), 2.35);
+      if (specCore <= 0.002) continue;
+      vec3 slitCol = cMid * 0.50 + (cUp + cDn) * 0.25;
 
-      float srcPeak = max(slitCol.r, max(slitCol.g, slitCol.b));
-      vec3 anamTint = mix(slitCol, defaultFlareTint * max(0.45, srcPeak * 1.25), 0.78);
-      coreStreak += (anamTint + slitCol * 0.22) * (specCore * coreEnv);
-      auraStreak += (sheathCol * defaultFlareTint * 1.10) * (specAura * auraEnv);
+      float absT = abs(t);
+      float tipTaper = pow(clamp(1.0 - absT, 0.0, 1.0), 1.35);
+      float coreEnv = exp(-absT * 1.95) * tipTaper;
+
+      float wingMix = smoothstep(0.02, 0.24, absT);
+      vec3 spectralDisp = vec3(
+        1.0 - smoothstep(0.24, 0.85, absT) * 0.22,
+        1.0 + sin(absT * 4.2) * 0.07,
+        1.0 + smoothstep(0.16, 0.82, absT) * 0.22
+      );
+      vec3 hotCenter = mix(slitCol, vec3(1.0), 0.68);
+      vec3 coatingBody = defaultFlareTint * spectralDisp * (0.85 + 0.55 * max(slitCol.r, max(slitCol.g, slitCol.b)));
+      vec3 streakColor = mix(hotCenter, mix(slitCol * 0.22 + coatingBody * 0.98, coatingBody, 0.84), wingMix);
+
+      coreStreak += streakColor * (specCore * coreEnv * invSteps);
     }
 
-    flareAccum += (coreStreak * 0.042 + auraStreak * 0.018) * (flareGain * anamWeight);
+    // --- Pass 2: Continuous 5-tap vertical Gaussian optical sheath (silky glass bloom, zero scanlines) ---
+    const int SHEATH_STEPS = 24;
+    float invSheath = 1.0 / float(SHEATH_STEPS);
+    float sheathWing = maxWing * 0.90;
+    float gStepY = 0.0052;
+
+    for (int k = -SHEATH_STEPS; k <= SHEATH_STEPS; k++) {
+      if (k == 0) continue;
+      float t = float(k) * invSheath;
+      vec2 baseUV = currentUV + axisDir * (t * sheathWing);
+      if (baseUV.x < 0.002 || baseUV.x > 0.998 || baseUV.y < 0.002 || baseUV.y > 0.998) continue;
+
+      vec3 c0 = texture(sourceTex, baseUV).rgb;
+      vec3 cU1 = texture(sourceTex, clamp(baseUV + perpDir * gStepY, vec2(0.002), vec2(0.998))).rgb;
+      vec3 cD1 = texture(sourceTex, clamp(baseUV - perpDir * gStepY, vec2(0.002), vec2(0.998))).rgb;
+      float peakNear = max(max(c0.r, max(c0.g, c0.b)), max(max(cU1.r, max(cU1.g, cU1.b)), max(cD1.r, max(cD1.g, cD1.b))));
+      if (peakNear <= 0.88) continue;
+
+      vec3 cU2 = texture(sourceTex, clamp(baseUV + perpDir * (gStepY * 2.0), vec2(0.002), vec2(0.998))).rgb;
+      vec3 cD2 = texture(sourceTex, clamp(baseUV - perpDir * (gStepY * 2.0), vec2(0.002), vec2(0.998))).rgb;
+      vec3 cBgU = texture(sourceTex, clamp(baseUV + perpDir * bgOffsetY, vec2(0.002), vec2(0.998))).rgb;
+      vec3 cBgD = texture(sourceTex, clamp(baseUV - perpDir * bgOffsetY, vec2(0.002), vec2(0.998))).rgb;
+
+      float rawGauss =
+        evalPointSpecularEmitter(c0, cBgU, cBgD) * 0.32 +
+        (evalPointSpecularEmitter(cU1, cBgU, cBgD) + evalPointSpecularEmitter(cD1, cBgU, cBgD)) * 0.24 +
+        (evalPointSpecularEmitter(cU2, cBgU, cBgD) + evalPointSpecularEmitter(cD2, cBgU, cBgD)) * 0.10;
+      float specGauss = pow(clamp(rawGauss, 0.0, 1.0), 1.95);
+      if (specGauss <= 0.002) continue;
+      vec3 gaussCol = c0 * 0.32 + (cU1 + cD1) * 0.24 + (cU2 + cD2) * 0.10;
+
+      float absT = abs(t);
+      float sheathEnv = exp(-absT * 2.70) * pow(clamp(1.0 - absT, 0.0, 1.0), 1.40);
+      vec3 spectralDisp = vec3(
+        1.0 - smoothstep(0.24, 0.85, absT) * 0.20,
+        1.0 + sin(absT * 4.2) * 0.06,
+        1.0 + smoothstep(0.16, 0.82, absT) * 0.20
+      );
+      vec3 sheathColor = mix(gaussCol, defaultFlareTint * 1.20, 0.88) * spectralDisp;
+      sheathStreak += sheathColor * (specGauss * sheathEnv * invSheath);
+    }
+
+    flareAccum += (coreStreak * 9.8 + sheathStreak * 4.2) * (flareGain * anamWeight);
   }
 
   // =========================================================================
-  // 1B. SPHERICAL POLYGONAL IRIS STARBURST DIFFRACTION RAYS (NO HORIZONTAL BAR)
+  // 1B. SPHERICAL FRAUNHOFER IRIS STARBURST DIFFRACTION RAYS
+  // Dense linear rays (20 taps/side) with fast early-out & true Fraunhofer RGB dispersion.
   // =========================================================================
   if (flareGain > 0.01 && sphericalWeight > 0.01) {
     vec3 starAccum = vec3(0.0);
-    float stoppedDown = clamp((apertureFStop - 1.4) / 6.6, 0.32, 1.0);
-    float rayLen = mix(0.068, 0.138, stoppedDown);
-    float baseStarRot = diffractionAngleDeg * 0.01745329;
+    float stoppedDown = clamp((apertureFStop - 1.4) / 6.6, 0.20, 1.0);
+    float rayLen = mix(0.085, 0.205, stoppedDown);
+    float baseStarRot = (diffractionAngleDeg + 15.0) * 0.01745329;
 
-    // 3 pairs = 6 crisp radial starburst diffraction spikes
-    for (int rIdx = 0; rIdx < 3; rIdx++) {
-      float rayAngle = baseStarRot + float(rIdx) * 1.04719755;
+    // 4 pairs (8 rays) for 8/9/16-blade irises; 3 pairs (6 rays) for 6/11/12/15-blade irises
+    int rayPairs = ((irisBlades >= 7.5 && irisBlades <= 9.5) || irisBlades >= 15.5) ? 4 : 3;
+    float angleStep = 3.14159265 / float(rayPairs);
+
+    const int STAR_STEPS = 20;
+    float invStar = 1.0 / float(STAR_STEPS);
+
+    for (int rIdx = 0; rIdx < 4; rIdx++) {
+      if (rIdx >= rayPairs) break;
+      float rayAngle = baseStarRot + float(rIdx) * angleStep;
       vec2 rayDir = vec2(cos(rayAngle) / max(0.6, canvasAspect), sin(rayAngle));
-      vec2 perpDir = vec2(-rayDir.y, rayDir.x) * 0.0012;
+      vec2 perpDir = normalize(vec2(-rayDir.y, rayDir.x)) * 0.0018;
 
-      for (int s = -10; s <= 10; s++) {
+      for (int s = -STAR_STEPS; s <= STAR_STEPS; s++) {
         if (s == 0) continue;
-        float ns = (float(s) + jitter * 0.75) / 10.0;
-        vec2 tapUV = currentUV + rayDir * (ns * rayLen);
-        if (tapUV.x < 0.002 || tapUV.x > 0.998 || tapUV.y < 0.002 || tapUV.y > 0.998) continue;
+        float t = float(s) * invStar;
 
-        vec3 s0 = texture(sourceTex, tapUV).rgb;
-        vec3 s1 = texture(sourceTex, clamp(tapUV + perpDir, vec2(0.002), vec2(0.998))).rgb;
-        vec3 s2 = texture(sourceTex, clamp(tapUV - perpDir, vec2(0.002), vec2(0.998))).rgb;
-        vec3 sCol = s0 * 0.60 + (s1 + s2) * 0.20;
+        // Fraunhofer diffraction: R diffracts slightly wider than G, B tighter
+        vec2 uvG = currentUV + rayDir * (t * rayLen);
+        if (uvG.x < 0.002 || uvG.x > 0.998 || uvG.y < 0.002 || uvG.y > 0.998) continue;
 
-        float spec = evalCapturedSpecularEnergy(sCol);
-        float env = exp(-abs(ns) * 2.45);
-        vec3 tintedCol = mix(sCol, sCol * defaultFlareTint * 1.15, 0.42);
-        starAccum += tintedCol * (spec * env);
+        vec3 sG0 = texture(sourceTex, uvG).rgb;
+        if (max(sG0.r, max(sG0.g, sG0.b)) <= 0.78) continue;
+
+        vec2 uvR = clamp(currentUV + rayDir * (t * rayLen * 1.068), vec2(0.002), vec2(0.998));
+        vec2 uvB = clamp(currentUV + rayDir * (t * rayLen * 0.932), vec2(0.002), vec2(0.998));
+        vec3 sBgU = texture(sourceTex, clamp(uvG + perpDir * 30.0, vec2(0.002), vec2(0.998))).rgb;
+        vec3 sBgD = texture(sourceTex, clamp(uvG - perpDir * 30.0, vec2(0.002), vec2(0.998))).rgb;
+
+        vec3 dispCol = vec3(
+          texture(sourceTex, uvR).r,
+          sG0.g,
+          texture(sourceTex, uvB).b
+        );
+        float spec = evalPointSpecularEmitter(dispCol, sBgU, sBgD);
+        float env = exp(-abs(t) * 2.15) * pow(clamp(1.0 - abs(t), 0.0, 1.0), 1.30);
+        vec3 tinted = mix(dispCol, dispCol * defaultFlareTint * 1.18, 0.30);
+        starAccum += tinted * (spec * env * invStar);
       }
     }
-    flareAccum += starAccum * (0.032 * flareGain * sphericalWeight * (0.72 + 0.55 * stoppedDown));
+    flareAccum += starAccum * (3.8 * flareGain * sphericalWeight * (0.58 + 0.85 * stoppedDown));
   }
 
   // =========================================================================
-  // 2. CONJUGATE CROSS-AXIS IRIS GHOSTS FROM CAPTURED LIGHTS / REFLECTIONS
+  // 2. CHROMATICALLY DISPERSIVE CONJUGATE IRIS GHOSTS & CAUSTIC RINGS
+  // Real multi-element internal air-glass reflections with radial RGB shift,
+  // grazing-incidence Fresnel boost, caustic outer rim, and anamorphic 2:1 ovality.
   // =========================================================================
   if (flareGain > 0.02) {
     vec2 center = vec2(0.5, 0.5);
     vec2 curOffset = currentUV - center;
     float radialCur = length(vec2(curOffset.x * canvasAspect, curOffset.y));
+    float fresnelBoost = 1.0 + 1.55 * pow(clamp(radialCur, 0.0, 1.0), 2.1);
+
+    float ovalStretchX = mix(1.0, 0.52, anamWeight);
+    float ovalStretchY = mix(1.0, 1.66, anamWeight);
 
     for (int i = 0; i < 6; i++) {
       vec4 geo = ghostGeo[i];
@@ -289,48 +428,82 @@ vec3 evaluateCapturedLensFlareAndGlare(
       float axisPos = geo.x;
       float r0 = geo.y;
       float reflectance = geo.w;
+      float shapeMode = opt.w;
       if (reflectance < 0.002) continue;
 
-      float safeAxis = abs(axisPos) < 0.30 ? (axisPos < 0.0 ? -0.30 : 0.30) : axisPos;
-      vec2 ghostSrcUV = center - curOffset / safeAxis;
-      if (ghostSrcUV.x < 0.02 || ghostSrcUV.x > 0.98 || ghostSrcUV.y < 0.02 || ghostSrcUV.y > 0.98) {
+      float safeAxis = abs(axisPos) < 0.28 ? (axisPos < 0.0 ? -0.28 : 0.28) : axisPos;
+      vec2 uvG = center - curOffset / safeAxis;
+      if (uvG.x < 0.015 || uvG.x > 0.985 || uvG.y < 0.015 || uvG.y > 0.985) {
         continue;
       }
 
-      // Anamorphic squeezes conjugate ghost kernel vertically into tall oval; Spherical stays circular 1:1
-      float kernelR = r0 * 0.30;
-      float ovalStretchX = mix(1.0, 0.65, anamWeight);
-      float ovalStretchY = mix(1.0, 1.42, anamWeight);
-      vec3 s0 = texture(sourceTex, ghostSrcUV).rgb;
-      vec3 s1 = texture(sourceTex, clamp(ghostSrcUV + vec2((kernelR * ovalStretchX) / canvasAspect, 0.0), vec2(0.01), vec2(0.99))).rgb;
-      vec3 s2 = texture(sourceTex, clamp(ghostSrcUV - vec2((kernelR * ovalStretchX) / canvasAspect, 0.0), vec2(0.01), vec2(0.99))).rgb;
-      vec3 s3 = texture(sourceTex, clamp(ghostSrcUV + vec2(0.0, kernelR * ovalStretchY), vec2(0.01), vec2(0.99))).rgb;
-      vec3 s4 = texture(sourceTex, clamp(ghostSrcUV - vec2(0.0, kernelR * ovalStretchY), vec2(0.01), vec2(0.99))).rgb;
-      vec3 avgSrc = (s0 * 2.0 + s1 + s2 + s3 + s4) / 6.0;
+      // Radial chromatic dispersion across curved glass air-glass interfaces
+      vec2 uvR = clamp(center - curOffset / (safeAxis * 0.945), vec2(0.01), vec2(0.99));
+      vec2 uvB = clamp(center - curOffset / (safeAxis * 1.055), vec2(0.01), vec2(0.99));
 
-      float specEnergy = evalCapturedSpecularEnergy(avgSrc);
-      if (specEnergy < 0.01) continue;
+      float kernelR = r0 * 0.44;
+      vec2 rx = vec2((kernelR * ovalStretchX) / max(0.6, canvasAspect), 0.0);
+      vec2 ry = vec2(0.0, kernelR * ovalStretchY);
+
+      vec3 cCenter = vec3(
+        texture(sourceTex, uvR).r,
+        texture(sourceTex, uvG).g,
+        texture(sourceTex, uvB).b
+      );
+      vec3 r1 = texture(sourceTex, clamp(uvG + rx, vec2(0.01), vec2(0.99))).rgb;
+      vec3 r2 = texture(sourceTex, clamp(uvG - rx, vec2(0.01), vec2(0.99))).rgb;
+      vec3 r3 = texture(sourceTex, clamp(uvG + ry, vec2(0.01), vec2(0.99))).rgb;
+      vec3 r4 = texture(sourceTex, clamp(uvG - ry, vec2(0.01), vec2(0.99))).rgb;
+      vec3 ringAvg = (r1 + r2 + r3 + r4) * 0.25;
+
+      // Annular caustic rim emphasis for ring/bubble ghost elements (shapeMode >= 2.5)
+      float isAnnular = step(2.5, shapeMode);
+      vec3 ghostSrc = mix(cCenter * 0.45 + ringAvg * 0.55, ringAvg * 0.82 + cCenter * 0.18, isAnnular);
+
+      // Local edge caustic shimmer when a bright point sits right on the ghost aperture rim
+      float rimSpec = evalCapturedSpecularEnergy(ringAvg);
+      float coreSpec = evalCapturedSpecularEnergy(cCenter);
+      float specEnergy = mix(coreSpec * 0.55 + rimSpec * 0.45, max(rimSpec * 1.18, abs(rimSpec - coreSpec * 0.65) * 1.50), isAnnular);
+      if (specEnergy < 0.008) continue;
 
       vec3 coatingTint = opt.xyz;
-      float cutoffFade = 1.0 - smoothstep(0.55, 0.95, radialCur);
-      vec3 ghostCol = mix(avgSrc, avgSrc * coatingTint * 1.25, 0.76);
-      flareAccum += ghostCol * (specEnergy * reflectance * 4.2 * cutoffFade * flareGain);
+      float cutoffFade = 1.0 - smoothstep(0.62, 0.99, radialCur);
+      vec3 ghostCol = mix(ghostSrc, ghostSrc * coatingTint * 1.45 + coatingTint * 0.10, 0.80);
+      flareAccum += ghostCol * (specEnergy * reflectance * 9.5 * fresnelBoost * cutoffFade * flareGain);
+    }
+
+    // 2B. Anamorphic Cylindrical Barrel Reflection Arc (Iconic Cooke SF / Panavision Edge Hoop)
+    if (anamWeight > 0.20) {
+      float hoopMask = exp(-pow((radialCur - 0.66) * 5.6, 2.0));
+      if (hoopMask > 0.02) {
+        vec2 oppUV = clamp(center - curOffset * 0.92, vec2(0.01), vec2(0.99));
+        vec2 oppR = clamp(center - curOffset * 0.87, vec2(0.01), vec2(0.99));
+        vec2 oppB = clamp(center - curOffset * 0.97, vec2(0.01), vec2(0.99));
+        vec3 oppCol = vec3(
+          texture(sourceTex, oppR).r,
+          texture(sourceTex, oppUV).g,
+          texture(sourceTex, oppB).b
+        );
+        float oppSpec = evalCapturedSpecularEnergy(oppCol);
+        flareAccum += (oppCol * defaultFlareTint * 1.28) * (oppSpec * hoopMask * 0.28 * flareGain * anamWeight);
+      }
     }
   }
 
   // =========================================================================
-  // 3. CAPTURED-HIGHLIGHT VEILING GLARE & INTERNAL SCATTERING HALO
-  // (Circular isotropic bloom on Spherical glass; horizontally elongated aura on Anamorphic glass)
+  // 3. LOCALIZED HENYEY-GREENSTEIN VEILING GLARE & INTERNAL SCATTERING HALO
+  // Wide velvety optical haze around bright captured lights (elliptical on anamorphic,
+  // circular isotropic on spherical) without washing out dark regions of the frame.
   // =========================================================================
-  if (veilingGlareCoeff > 0.005) {
+  if (veilingGlareCoeff > 0.005 || sphericalWeight > 0.2) {
     vec3 glareAccum = vec3(0.0);
-    vec2 haloAnisotropy = vec2(mix(1.0, 1.55, anamWeight), mix(1.0, 0.68, anamWeight));
+    vec2 haloAnisotropy = vec2(mix(1.0, 1.70, anamWeight), mix(1.0, 0.62, anamWeight));
     for (int j = 0; j < 8; j++) {
       float ang = float(j) * 0.78539816;
-      vec2 dir = vec2(cos(ang) * haloAnisotropy.x / canvasAspect, sin(ang) * haloAnisotropy.y);
+      vec2 dir = vec2(cos(ang) * haloAnisotropy.x / max(0.6, canvasAspect), sin(ang) * haloAnisotropy.y);
       vec2 uvNear = clamp(currentUV + dir * 0.022, vec2(0.002), vec2(0.998));
-      vec2 uvMid  = clamp(currentUV + dir * 0.052, vec2(0.002), vec2(0.998));
-      vec2 uvFar  = clamp(currentUV + dir * 0.095, vec2(0.002), vec2(0.998));
+      vec2 uvMid  = clamp(currentUV + dir * 0.058, vec2(0.002), vec2(0.998));
+      vec2 uvFar  = clamp(currentUV + dir * 0.125, vec2(0.002), vec2(0.998));
 
       vec3 cNear = texture(sourceTex, uvNear).rgb;
       vec3 cMid  = texture(sourceTex, uvMid).rgb;
@@ -339,14 +512,15 @@ vec3 evaluateCapturedLensFlareAndGlare(
       float eMid  = evalCapturedSpecularEnergy(cMid);
       float eFar  = evalCapturedSpecularEnergy(cFar);
 
-      glareAccum += cNear * eNear * 0.50 + cMid * eMid * 0.32 + cFar * eFar * 0.18;
+      glareAccum += cNear * eNear * 0.48 + cMid * eMid * 0.34 + cFar * eFar * 0.18;
     }
     glareAccum /= 8.0;
-      vec3 glareTint = mix(vec3(1.0), defaultFlareTint, mix(0.20, 0.45, anamWeight));
-    flareAccum += glareAccum * glareTint * (veilingGlareCoeff * 0.48 + sphericalWeight * flareGain * 0.06);
+    vec3 glareTint = mix(vec3(1.0), defaultFlareTint, mix(0.20, 0.50, anamWeight));
+    float wideOpenBoost = clamp(2.4 / max(1.2, apertureFStop), 0.45, 1.30);
+    flareAccum += glareAccum * glareTint * (veilingGlareCoeff * 0.46 * wideOpenBoost + sphericalWeight * flareGain * 0.08);
   }
 
-  return flareAccum / (vec3(1.0) + flareAccum * 0.90);
+  return flareAccum;
 }
 `;
 
@@ -425,4 +599,34 @@ export function evaluatePhysicallyBasedFlareCpu(
     cosIncidence: Number(cosIncidence.toFixed(4)),
   };
 }
+
+/**
+ * Pure TypeScript mirror of evalPointSpecularEmitter used by WebGL2, WebGPU, and LUT Cam shaders.
+ * Verifies that isolated lamps/reflections trigger strong streaks while broad flat bright surfaces stay controlled.
+ */
+export function evaluatePointSpecularEmitterCpu(
+  coreRgb: [number, number, number],
+  bgAboveRgb: [number, number, number],
+  bgBelowRgb: [number, number, number]
+): number {
+  const smoothstep = (e0: number, e1: number, x: number) => {
+    const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+    return t * t * (3 - 2 * t);
+  };
+  const peak = Math.max(coreRgb[0], coreRgb[1], coreRgb[2]);
+  const lum = coreRgb[0] * 0.2126 + coreRgb[1] * 0.7152 + coreRgb[2] * 0.0722;
+  const bgPeakA = Math.max(bgAboveRgb[0], bgAboveRgb[1], bgAboveRgb[2]);
+  const bgPeakB = Math.max(bgBelowRgb[0], bgBelowRgb[1], bgBelowRgb[2]);
+  const bgPeak = 0.5 * (bgPeakA + bgPeakB);
+
+  const localContrast = Math.max(0, Math.min(1, (peak - bgPeak) * 2.5));
+  const clipCore = Math.pow(smoothstep(0.91, 0.996, lum + (peak - lum) * 0.55), 2.4);
+  const practical = Math.pow(smoothstep(0.85, 0.995, peak), 2.7) * (0.08 + 0.92 * localContrast);
+  const broadFlatMask = smoothstep(0.74, 0.91, bgPeak) * (1.0 - localContrast);
+  const broadSuppress = 1.0 + (0.15 - 1.0) * broadFlatMask;
+  const clipSuppress = 1.0 + (0.28 - 1.0) * broadFlatMask;
+
+  return Number(Math.max(clipCore * clipSuppress, practical * broadSuppress).toFixed(4));
+}
+
 

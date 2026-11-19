@@ -35,7 +35,6 @@ import {
 import { runChunkedWorkerRenderJob } from '../pipeline/video-processor';
 import { SavedOpticalPresetRecord } from './OpticalParameterPanel';
 import { RenderJobRecord } from './ScopesAndBenchmarkPanel';
-import { SpectralSensitivityVisualizer } from './SpectralSensitivityVisualizer';
 import { CinemaControlConsole, ConsoleTabId } from './CinemaControlConsole';
 import { MobileCameraStreamLut } from './MobileCameraStreamLut';
 import {
@@ -65,7 +64,6 @@ import {
   SkipBack,
   SkipForward,
   Sliders,
-  Sparkles,
   Square,
   Sun,
   SwitchCamera,
@@ -239,9 +237,8 @@ export function PrismatoneWorkspace({
     };
   }, [params.lightSourceX, params.lightSourceY, params.focalLengthMm, activeGhostTable]);
 
-  // Camera App Console State: active dial tab, visualizer modal, LUT cam, and viewfinder HUD
+  // Camera App Console State: active dial tab, LUT cam, and viewfinder HUD
   const [activeConsoleTab, setActiveConsoleTab] = useState<ConsoleTabId>('camera');
-  const [showSpectralModal, setShowSpectralModal] = useState<boolean>(false);
   const [showFullscreenLutCam, setShowFullscreenLutCam] = useState<boolean>(false);
   const [isConsoleCollapsed, setIsConsoleCollapsed] = useState<boolean>(false);
   const [showGridOverlay, setShowGridOverlay] = useState<boolean>(false);
@@ -1395,17 +1392,6 @@ export function PrismatoneWorkspace({
               <Eye className="w-3.5 h-3.5" />
             </button>
 
-            {/* Spectral Curves Trigger (Mobile / Tablet Top HUD) */}
-            <button
-              type="button"
-              onClick={() => setShowSpectralModal(true)}
-              aria-label="Open Spectral Sensitivity Curves Visualizer"
-              title="Spectral Sensitivity Curves Visualizer"
-              className="lg:hidden w-7 h-7 sm:w-auto sm:h-auto sm:p-1.5 flex items-center justify-center rounded-full bg-black/60 hover:bg-white/15 backdrop-blur-md border border-sky-400/40 text-sky-300 transition-colors"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-            </button>
-
             {/* Live Camera Emulation Pill Button */}
             <button
               type="button"
@@ -1620,7 +1606,7 @@ export function PrismatoneWorkspace({
                 </div>
               )}
 
-              {/* Desktop-Only Viewfinder HUD Bar & Spectral Lab Trigger (avoids duplicate truncated HUD on mobile) */}
+              {/* Desktop-Only Viewfinder HUD Bar (avoids duplicate truncated HUD on mobile) */}
               <div className="hidden lg:flex absolute top-3 inset-x-3 items-center justify-between gap-2 pointer-events-none z-20">
                 <div className="min-w-0 flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/75 backdrop-blur-md border border-white/15 text-[11px] font-mono text-slate-200 shadow-lg overflow-hidden">
                   <span className="text-amber-300 font-semibold">{activeCamera.model}</span>
@@ -1636,17 +1622,6 @@ export function PrismatoneWorkspace({
                     </span>
                   )}
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => setShowSpectralModal(true)}
-                  aria-label="Open Spectral Sensitivity Curves Visualizer"
-                  title="Open Spectral Sensitivity Curves Visualizer"
-                  className="pointer-events-auto shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/80 hover:bg-black/95 backdrop-blur-md border border-sky-400/40 text-[11px] font-mono text-sky-300 hover:text-white transition-all shadow-lg active:scale-95"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                  <span>Spectral Lab</span>
-                </button>
               </div>
 
               {/* Live Camera Diagnostic Pill (when physical camera is blocked/unavailable) */}
@@ -2089,23 +2064,6 @@ export function PrismatoneWorkspace({
           }
         />
       </div>
-
-      {/* FULLSCREEN POPUP MODAL: SENSOR SPECTRAL SENSITIVITY VISUALIZER */}
-      {showSpectralModal && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Sensor Spectral Sensitivity Curves Visualizer"
-          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-xl animate-fadeIn overflow-y-auto"
-        >
-          <SpectralSensitivityVisualizer
-            activeCamera={activeCamera}
-            activeLens={activeLens}
-            onSelectCamera={handleSelectCamera}
-            onClose={() => setShowSpectralModal(false)}
-          />
-        </div>
-      )}
 
       {/* FULLSCREEN WEBGL2 LIVE CAMERA WITH HOLLYWOOD LUT & COC BOKEH SHADERS */}
       {showFullscreenLutCam && (

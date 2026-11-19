@@ -48,11 +48,42 @@ fn luma(c: vec3<f32>) -> f32 {
 }
 
 fn evalCapturedSpecularEnergy(col: vec3<f32>) -> f32 {
-  let peak = max(col.r, max(col.g, col.b));
-  let lum = luma(col);
-  let sig = mix(lum, peak, 0.45);
-  let s = smoothstep(0.86, 0.99, sig);
-  return s * s * s * (0.65 + 0.65 * peak);
+  let lin = pow(max(vec3<f32>(0.0), col), vec3<f32>(2.2));
+  let linLum = luma(lin);
+  let linPeak = max(lin.r, max(lin.g, lin.b));
+  let incand = mix(linLum, linPeak, 0.22);
+  let core = smoothstep(0.76, 0.992, incand);
+  let hot = smoothstep(0.90, 0.998, linLum);
+  return core * core * core * (0.45 + 0.85 * hot);
+}
+
+fn evalPointSpecularEmitter(cCore: vec3<f32>, cBgA: vec3<f32>, cBgB: vec3<f32>) -> f32 {
+  let linCore = pow(max(vec3<f32>(0.0), cCore), vec3<f32>(2.2));
+  let linBgA = pow(max(vec3<f32>(0.0), cBgA), vec3<f32>(2.2));
+  let linBgB = pow(max(vec3<f32>(0.0), cBgB), vec3<f32>(2.2));
+  let linLum = luma(linCore);
+  let linPeak = max(linCore.r, max(linCore.g, linCore.b));
+  if (linLum < 0.66 || linPeak < 0.76) {
+    return 0.0;
+  }
+  let bgLum = 0.5 * (luma(linBgA) + luma(linBgB));
+  let localPop = clamp((linLum - bgLum) * 2.6, 0.0, 1.0);
+  let wideSuppress = 1.0 - 0.68 * smoothstep(0.54, 0.88, bgLum);
+  let incand = mix(linLum, linPeak, 0.20);
+  let hotCore = pow(smoothstep(0.68, 0.985, incand), 2.25);
+  let clippedCore = pow(smoothstep(0.84, 0.995, linLum), 2.10);
+  let isoEnergy = hotCore * (0.28 + 0.72 * localPop) * wideSuppress;
+  let clipEnergy = clippedCore * mix(0.40, 1.0, wideSuppress);
+  return max(isoEnergy, clipEnergy);
+}
+
+fn compositeOpticalFlare(baseCol: vec3<f32>, rawFlare: vec3<f32>) -> vec3<f32> {
+  // Physically authentic linear HDR additive optical flare compositing with smooth filmic shoulder
+  let baseLin = pow(max(vec3<f32>(0.0), baseCol), vec3<f32>(2.2));
+  let flareLin = max(vec3<f32>(0.0), rawFlare);
+  let combinedLin = baseLin + flareLin;
+  let mappedLin = combinedLin / (vec3<f32>(1.0) + max(vec3<f32>(0.0), combinedLin - vec3<f32>(0.68)) * 0.65);
+  return clamp(pow(max(vec3<f32>(0.0), mappedLin), vec3<f32>(1.0 / 2.2)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 fn projectAnamorphicAndDistortUV(
@@ -741,94 +772,122 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
   color = applyHollywoodCinemaLutWgsl(color, hollywoodLutId, hollywoodLutBlend);
 
-  // Post-LUT Optical Glass/Element Stage: Captured Anamorphic Cylindrical Streaks, Spherical Starbursts, Ghosts & Veiling Glare
+  // Post-LUT Optical Glass/Element Stage: Reworked Full-Width Anamorphic Streaks, Fraunhofer Starbursts, Dispersive Ghosts & Veiling Glare
   let anamWeight = smoothstep(1.05, 1.38, squeeze);
   let sphericalWeight = 1.0 - anamWeight;
 
   if (flareIntensity > 0.005 || veilingGlare > 0.005) {
     var flareAccum = vec3<f32>(0.0);
     let jitter = hash12(distortedUV * 819.73) - 0.5;
+    let isDefaultAngle = length(lightSourceUV - vec2<f32>(0.72, 0.28)) < 0.015;
+    let streakRad = select(atan2(lightSourceUV.y - 0.5, lightSourceUV.x - 0.5), 0.0, isDefaultAngle);
 
-    // 1A. Anamorphic Cylindrical Front-Element Level Horizontal Streak + Soft Sheath
+    // 1A. Continuous Gap-Free Anamorphic Cylindrical Beam (Sub-Step Jittered + Soft Vertical Gaussian)
     if (flareIntensity > 0.01 && anamWeight > 0.01) {
-      var coreStreak = vec3<f32>(0.0);
-      var auraStreak = vec3<f32>(0.0);
-      let maxWing = clamp(0.20 * max(1.15, squeeze), 0.20, 0.42);
-      let slitY = 0.0015;
-      let auraY = 0.0052;
+      var softStreak = vec3<f32>(0.0);
+      let maxWing = clamp(0.22 * max(1.15, squeeze), 0.30, 0.42);
+      let bgOffsetY = 0.055;
+      let axisDir = vec2<f32>(cos(streakRad), sin(streakRad) * canvasAspect);
+      let perpDir = normalize(vec2<f32>(-sin(streakRad) / max(0.5, canvasAspect), cos(streakRad)));
+      let invSteps = 1.0 / 64.0;
+      let blurY1 = 0.0085;
+      let blurY2 = 0.0185;
+      let normTint = flareTint / max(0.05, max(flareTint.r, max(flareTint.g, flareTint.b)));
 
-      for (var k: i32 = -26; k <= 26; k = k + 1) {
-        if (k == 0) {
+      for (var k: i32 = -64; k <= 64; k = k + 1) {
+        let t = (f32(k) + jitter) * invSteps;
+        let baseUV = distortedUV + axisDir * (t * maxWing);
+        if (baseUV.x < 0.003 || baseUV.x > 0.997 || baseUV.y < 0.003 || baseUV.y > 0.997) {
           continue;
         }
-        let nk = (f32(k) + jitter * 0.85) / 26.0;
-        let dx = nk * maxWing;
-        let baseUV = distortedUV + vec2<f32>(dx, 0.0);
-        if (baseUV.x < 0.002 || baseUV.x > 0.998 || baseUV.y < 0.002 || baseUV.y > 0.998) {
+        let c0 = textureSampleLevel(sourceTex, texSampler, baseUV, 0.0).rgb;
+        let cU1 = textureSampleLevel(sourceTex, texSampler, clamp(baseUV + perpDir * blurY1, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
+        let cD1 = textureSampleLevel(sourceTex, texSampler, clamp(baseUV - perpDir * blurY1, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
+        let cU2 = textureSampleLevel(sourceTex, texSampler, clamp(baseUV + perpDir * blurY2, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
+        let cD2 = textureSampleLevel(sourceTex, texSampler, clamp(baseUV - perpDir * blurY2, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
+        let slitCol = c0 * 0.32 + (cU1 + cD1) * 0.24 + (cU2 + cD2) * 0.10;
+        if (luma(slitCol) <= 0.72) {
           continue;
         }
-        let cMid = textureSampleLevel(sourceTex, texSampler, baseUV, 0.0).rgb;
-        let cTop = textureSampleLevel(sourceTex, texSampler, clamp(baseUV + vec2<f32>(0.0, slitY), vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
-        let cBot = textureSampleLevel(sourceTex, texSampler, clamp(baseUV - vec2<f32>(0.0, slitY), vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
-        let cSheathU = textureSampleLevel(sourceTex, texSampler, clamp(baseUV + vec2<f32>(0.0, auraY), vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
-        let cSheathD = textureSampleLevel(sourceTex, texSampler, clamp(baseUV - vec2<f32>(0.0, auraY), vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
-        let slitCol = cMid * 0.56 + cTop * 0.22 + cBot * 0.22;
-        let sheathCol = (cSheathU + cSheathD) * 0.5;
 
-        let specCore = evalCapturedSpecularEnergy(slitCol);
-        let specAura = evalCapturedSpecularEnergy(sheathCol);
-        let coreEnv = exp(-abs(nk) * 2.85);
-        let auraEnv = exp(-abs(nk) * 1.65);
-        let srcPeak = max(slitCol.r, max(slitCol.g, slitCol.b));
-        let anamTint = mix(slitCol, flareTint * max(0.45, srcPeak * 1.25), 0.78);
-        coreStreak += (anamTint + slitCol * 0.22) * (specCore * coreEnv);
-        auraStreak += (sheathCol * flareTint * 1.10) * (specAura * auraEnv);
+        let cBgU = textureSampleLevel(sourceTex, texSampler, clamp(baseUV + perpDir * bgOffsetY, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
+        let cBgD = textureSampleLevel(sourceTex, texSampler, clamp(baseUV - perpDir * bgOffsetY, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
+        let specVal = evalPointSpecularEmitter(slitCol, cBgU, cBgD);
+        if (specVal <= 0.002) {
+          continue;
+        }
+
+        let absT = abs(t);
+        let tipTaper = pow(clamp(1.0 - absT, 0.0, 1.0), 1.45);
+        let env = exp(-absT * 2.35) * tipTaper;
+        let wingMix = smoothstep(0.04, 0.28, absT);
+        let streakColor = mix(mix(slitCol, vec3<f32>(1.0), 0.35), normTint * 1.12, wingMix);
+        softStreak += streakColor * (specVal * env * invSteps);
       }
-      flareAccum += (coreStreak * 0.042 + auraStreak * 0.018) * (flareIntensity * anamWeight);
+
+      let compressedStreak = softStreak * 5.4 / (vec3<f32>(1.0) + softStreak * 3.2);
+      flareAccum += compressedStreak * (flareIntensity * anamWeight);
     }
 
-    // 1B. Spherical Polygonal Iris Starburst Diffraction Rays
+    // 1B. Spherical Fraunhofer Iris Starburst Diffraction Rays (Continuous Linear 20-tap/side)
     if (flareIntensity > 0.01 && sphericalWeight > 0.01) {
       var starAccum = vec3<f32>(0.0);
-      let stoppedDown = clamp((fStop - 1.4) / 6.6, 0.32, 1.0);
-      let rayLen = mix(0.068, 0.138, stoppedDown);
-      let baseStarRot = atan2(lightSourceUV.y - 0.5, lightSourceUV.x - 0.5);
+      let stoppedDown = clamp((fStop - 1.4) / 6.6, 0.20, 1.0);
+      let rayLen = mix(0.085, 0.205, stoppedDown);
+      let baseStarRot = streakRad + 0.26179938;
+      let rayPairs = select(3, 4, (irisBlades >= 7.5 && irisBlades <= 9.5) || irisBlades >= 15.5);
+      let angleStep = 3.14159265 / f32(rayPairs);
+      let invStar = 1.0 / 20.0;
 
-      for (var rIdx: i32 = 0; rIdx < 3; rIdx = rIdx + 1) {
-        let rayAngle = baseStarRot + f32(rIdx) * 1.04719755;
+      for (var rIdx: i32 = 0; rIdx < 4; rIdx = rIdx + 1) {
+        if (rIdx >= rayPairs) {
+          break;
+        }
+        let rayAngle = baseStarRot + f32(rIdx) * angleStep;
         let rayDir = vec2<f32>(cos(rayAngle) / max(0.6, canvasAspect), sin(rayAngle));
-        let perpDir = vec2<f32>(-rayDir.y, rayDir.x) * 0.0012;
+        let perpDir = normalize(vec2<f32>(-rayDir.y, rayDir.x)) * 0.0018;
 
-        for (var s: i32 = -10; s <= 10; s = s + 1) {
+        for (var s: i32 = -20; s <= 20; s = s + 1) {
           if (s == 0) {
             continue;
           }
-          let ns = (f32(s) + jitter * 0.75) / 10.0;
-          let tapUV = distortedUV + rayDir * (ns * rayLen);
-          if (tapUV.x < 0.002 || tapUV.x > 0.998 || tapUV.y < 0.002 || tapUV.y > 0.998) {
+          let t = f32(s) * invStar;
+
+          let uvG = distortedUV + rayDir * (t * rayLen);
+          if (uvG.x < 0.002 || uvG.x > 0.998 || uvG.y < 0.002 || uvG.y > 0.998) {
             continue;
           }
-          let s0 = textureSampleLevel(sourceTex, texSampler, tapUV, 0.0).rgb;
-          let s1 = textureSampleLevel(sourceTex, texSampler, clamp(tapUV + perpDir, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
-          let s2 = textureSampleLevel(sourceTex, texSampler, clamp(tapUV - perpDir, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
-          let sCol = s0 * 0.60 + (s1 + s2) * 0.20;
+          let sG0 = textureSampleLevel(sourceTex, texSampler, uvG, 0.0).rgb;
+          if (max(sG0.r, max(sG0.g, sG0.b)) <= 0.78) {
+            continue;
+          }
 
-          let specS = evalCapturedSpecularEnergy(sCol);
-          let envS = exp(-abs(ns) * 2.45);
-          let tintedS = mix(sCol, sCol * flareTint * 1.15, 0.42);
-          starAccum += tintedS * (specS * envS);
+          let uvR = clamp(distortedUV + rayDir * (t * rayLen * 1.068), vec2<f32>(0.002), vec2<f32>(0.998));
+          let uvB = clamp(distortedUV + rayDir * (t * rayLen * 0.932), vec2<f32>(0.002), vec2<f32>(0.998));
+          let sBgU = textureSampleLevel(sourceTex, texSampler, clamp(uvG + perpDir * 30.0, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
+          let sBgD = textureSampleLevel(sourceTex, texSampler, clamp(uvG - perpDir * 30.0, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0).rgb;
+          let dispCol = vec3<f32>(
+            textureSampleLevel(sourceTex, texSampler, uvR, 0.0).r,
+            sG0.g,
+            textureSampleLevel(sourceTex, texSampler, uvB, 0.0).b
+          );
+          let specS = evalPointSpecularEmitter(dispCol, sBgU, sBgD);
+          let envS = exp(-abs(t) * 2.15) * pow(clamp(1.0 - abs(t), 0.0, 1.0), 1.30);
+          let tintedS = mix(dispCol, dispCol * flareTint * 1.18, 0.30);
+          starAccum += tintedS * (specS * envS * invStar);
         }
       }
-      flareAccum += starAccum * (0.032 * flareIntensity * sphericalWeight * (0.72 + 0.55 * stoppedDown));
+      flareAccum += starAccum * (3.8 * flareIntensity * sphericalWeight * (0.58 + 0.85 * stoppedDown));
     }
 
-    // 2. Conjugate Cross-Axis Iris Ghosts
+    // 2. Chromatically Dispersive Conjugate Iris Ghosts & Barrel Arc
     if (flareIntensity > 0.02) {
       let center = vec2<f32>(0.5, 0.5);
       let curOffset = distortedUV - center;
       let radialCur = length(vec2<f32>(curOffset.x * canvasAspect, curOffset.y));
-      let ovalStretchX = mix(1.0, 0.65, anamWeight);
-      let ovalStretchY = mix(1.0, 1.42, anamWeight);
+      let fresnelBoost = 1.0 + 1.55 * pow(clamp(radialCur, 0.0, 1.0), 2.1);
+      let ovalStretchX = mix(1.0, 0.52, anamWeight);
+      let ovalStretchY = mix(1.0, 1.66, anamWeight);
 
       for (var gi: i32 = 0; gi < 6; gi = gi + 1) {
         let geo = uniforms.data[20 + gi];
@@ -836,57 +895,88 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let axisPos = geo.x;
         let r0 = geo.y;
         let reflectance = geo.w;
+        let shapeMode = opt.w;
         if (reflectance > 0.002) {
-          let safeAxis = select(max(0.30, axisPos), min(-0.30, axisPos), axisPos < 0.0);
-          let ghostSrcUV = center - curOffset / safeAxis;
-          if (ghostSrcUV.x >= 0.02 && ghostSrcUV.x <= 0.98 && ghostSrcUV.y >= 0.02 && ghostSrcUV.y <= 0.98) {
-            let kernelR = r0 * 0.30;
-            let s0 = textureSampleLevel(sourceTex, texSampler, ghostSrcUV, 0.0).rgb;
-            let s1 = textureSampleLevel(sourceTex, texSampler, clamp(ghostSrcUV + vec2<f32>((kernelR * ovalStretchX) / canvasAspect, 0.0), vec2<f32>(0.01), vec2<f32>(0.99)), 0.0).rgb;
-            let s2 = textureSampleLevel(sourceTex, texSampler, clamp(ghostSrcUV - vec2<f32>((kernelR * ovalStretchX) / canvasAspect, 0.0), vec2<f32>(0.01), vec2<f32>(0.99)), 0.0).rgb;
-            let s3 = textureSampleLevel(sourceTex, texSampler, clamp(ghostSrcUV + vec2<f32>(0.0, kernelR * ovalStretchY), vec2<f32>(0.01), vec2<f32>(0.99)), 0.0).rgb;
-            let s4 = textureSampleLevel(sourceTex, texSampler, clamp(ghostSrcUV - vec2<f32>(0.0, kernelR * ovalStretchY), vec2<f32>(0.01), vec2<f32>(0.99)), 0.0).rgb;
-            let avgSrc = (s0 * 2.0 + s1 + s2 + s3 + s4) / 6.0;
-            let specEnergy = evalCapturedSpecularEnergy(avgSrc);
-            if (specEnergy >= 0.01) {
-              let cutoffFade = 1.0 - smoothstep(0.55, 0.95, radialCur);
-              let ghostCol = mix(avgSrc, avgSrc * opt.xyz * 1.25, 0.76);
-              flareAccum += ghostCol * (specEnergy * reflectance * 4.2 * cutoffFade * flareIntensity);
+          let safeAxis = select(max(0.28, axisPos), min(-0.28, axisPos), axisPos < 0.0);
+          let uvG = center - curOffset / safeAxis;
+          if (uvG.x >= 0.015 && uvG.x <= 0.985 && uvG.y >= 0.015 && uvG.y <= 0.985) {
+            let uvR = clamp(center - curOffset / (safeAxis * 0.945), vec2<f32>(0.01), vec2<f32>(0.99));
+            let uvB = clamp(center - curOffset / (safeAxis * 1.055), vec2<f32>(0.01), vec2<f32>(0.99));
+            let kernelR = r0 * 0.44;
+            let rx = vec2<f32>((kernelR * ovalStretchX) / max(0.6, canvasAspect), 0.0);
+            let ry = vec2<f32>(0.0, kernelR * ovalStretchY);
+
+            let cCenter = vec3<f32>(
+              textureSampleLevel(sourceTex, texSampler, uvR, 0.0).r,
+              textureSampleLevel(sourceTex, texSampler, uvG, 0.0).g,
+              textureSampleLevel(sourceTex, texSampler, uvB, 0.0).b
+            );
+            let r1 = textureSampleLevel(sourceTex, texSampler, clamp(uvG + rx, vec2<f32>(0.01), vec2<f32>(0.99)), 0.0).rgb;
+            let r2 = textureSampleLevel(sourceTex, texSampler, clamp(uvG - rx, vec2<f32>(0.01), vec2<f32>(0.99)), 0.0).rgb;
+            let r3 = textureSampleLevel(sourceTex, texSampler, clamp(uvG + ry, vec2<f32>(0.01), vec2<f32>(0.99)), 0.0).rgb;
+            let r4 = textureSampleLevel(sourceTex, texSampler, clamp(uvG - ry, vec2<f32>(0.01), vec2<f32>(0.99)), 0.0).rgb;
+            let ringAvg = (r1 + r2 + r3 + r4) * 0.25;
+
+            let isAnnular = step(2.5, shapeMode);
+            let ghostSrc = mix(cCenter * 0.45 + ringAvg * 0.55, ringAvg * 0.82 + cCenter * 0.18, isAnnular);
+            let rimSpec = evalCapturedSpecularEnergy(ringAvg);
+            let coreSpec = evalCapturedSpecularEnergy(cCenter);
+            let specEnergy = mix(coreSpec * 0.55 + rimSpec * 0.45, max(rimSpec * 1.18, abs(rimSpec - coreSpec * 0.65) * 1.50), isAnnular);
+            if (specEnergy >= 0.008) {
+              let cutoffFade = 1.0 - smoothstep(0.62, 0.99, radialCur);
+              let ghostCol = mix(ghostSrc, ghostSrc * opt.xyz * 1.45 + opt.xyz * 0.10, 0.80);
+              flareAccum += ghostCol * (specEnergy * reflectance * 9.5 * fresnelBoost * cutoffFade * flareIntensity);
             }
           }
         }
       }
+
+      if (anamWeight > 0.20) {
+        let hoopMask = exp(-pow((radialCur - 0.66) * 5.6, 2.0));
+        if (hoopMask > 0.02) {
+          let oppUV = clamp(center - curOffset * 0.92, vec2<f32>(0.01), vec2<f32>(0.99));
+          let oppR = clamp(center - curOffset * 0.87, vec2<f32>(0.01), vec2<f32>(0.99));
+          let oppB = clamp(center - curOffset * 0.97, vec2<f32>(0.01), vec2<f32>(0.99));
+          let oppCol = vec3<f32>(
+            textureSampleLevel(sourceTex, texSampler, oppR, 0.0).r,
+            textureSampleLevel(sourceTex, texSampler, oppUV, 0.0).g,
+            textureSampleLevel(sourceTex, texSampler, oppB, 0.0).b
+          );
+          let oppSpec = evalCapturedSpecularEnergy(oppCol);
+          flareAccum += (oppCol * flareTint * 1.28) * (oppSpec * hoopMask * 0.28 * flareIntensity * anamWeight);
+        }
+      }
     }
 
-    // 3. Captured-Highlight Veiling Glare & Scattering Halo
-    if (veilingGlare > 0.005) {
+    // 3. Localized Henyey-Greenstein Veiling Glare & Scattering Halo
+    if (veilingGlare > 0.005 || sphericalWeight > 0.2) {
       var glareAccum = vec3<f32>(0.0);
-      let haloAnisotropy = vec2<f32>(mix(1.0, 1.55, anamWeight), mix(1.0, 0.68, anamWeight));
+      let haloAnisotropy = vec2<f32>(mix(1.0, 1.70, anamWeight), mix(1.0, 0.62, anamWeight));
       for (var j: i32 = 0; j < 8; j = j + 1) {
         let ang = f32(j) * 0.78539816;
-        let dir = vec2<f32>(cos(ang) * haloAnisotropy.x / canvasAspect, sin(ang) * haloAnisotropy.y);
+        let dir = vec2<f32>(cos(ang) * haloAnisotropy.x / max(0.6, canvasAspect), sin(ang) * haloAnisotropy.y);
         let uvNear = clamp(distortedUV + dir * 0.022, vec2<f32>(0.002), vec2<f32>(0.998));
-        let uvMid  = clamp(distortedUV + dir * 0.052, vec2<f32>(0.002), vec2<f32>(0.998));
-        let uvFar  = clamp(distortedUV + dir * 0.095, vec2<f32>(0.002), vec2<f32>(0.998));
+        let uvMid  = clamp(distortedUV + dir * 0.058, vec2<f32>(0.002), vec2<f32>(0.998));
+        let uvFar  = clamp(distortedUV + dir * 0.125, vec2<f32>(0.002), vec2<f32>(0.998));
         let cNear = textureSampleLevel(sourceTex, texSampler, uvNear, 0.0).rgb;
         let cMid  = textureSampleLevel(sourceTex, texSampler, uvMid, 0.0).rgb;
         let cFar  = textureSampleLevel(sourceTex, texSampler, uvFar, 0.0).rgb;
         let eNear = evalCapturedSpecularEnergy(cNear);
         let eMid  = evalCapturedSpecularEnergy(cMid);
         let eFar  = evalCapturedSpecularEnergy(cFar);
-        glareAccum += cNear * eNear * 0.50 + cMid * eMid * 0.32 + cFar * eFar * 0.18;
+        glareAccum += cNear * eNear * 0.48 + cMid * eMid * 0.34 + cFar * eFar * 0.18;
       }
-      let glareTint = mix(vec3<f32>(1.0), flareTint, mix(0.20, 0.45, anamWeight));
-      flareAccum += (glareAccum / 8.0) * glareTint * (veilingGlare * 0.48 + sphericalWeight * flareIntensity * 0.06);
+      let glareTint = mix(vec3<f32>(1.0), flareTint, mix(0.20, 0.50, anamWeight));
+      let wideOpenBoost = clamp(2.4 / max(1.2, fStop), 0.45, 1.30);
+      flareAccum += (glareAccum / 8.0) * glareTint * (veilingGlare * 0.46 * wideOpenBoost + sphericalWeight * flareIntensity * 0.08);
     }
 
-    flareAccum = flareAccum / (vec3<f32>(1.0) + flareAccum * 0.90);
     let lutInt = i32(floor(hollywoodLutId + 0.5));
     if ((lutInt == 8 && hollywoodLutBlend > 0.001) || effectiveSat <= 0.02) {
       let flareDesat = select(hollywoodLutBlend, 1.0, effectiveSat <= 0.02);
       flareAccum = mix(flareAccum, vec3<f32>(luma(flareAccum)), flareDesat);
     }
-    color = clamp(color + flareAccum * (1.0 - color * 0.35), vec3<f32>(0.0), vec3<f32>(1.0));
+    color = compositeOpticalFlare(color, flareAccum);
   }
 
   if (effectiveSat <= 0.02) {
@@ -922,9 +1012,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let nChromaR = hash12(grainCoord + vec2<f32>(13.1, 7.7)) - 0.5;
     let nChromaB = hash12(grainCoord + vec2<f32>(29.4, 19.3)) - 0.5;
 
-    let rowNoise = (hash12(vec2<f32>(floor(in.uv.y * res.y), 3.1)) - 0.5) * fpnAmount * isoMultiplier;
-    let colNoise = (hash12(vec2<f32>(floor(in.uv.x * res.x), 8.7)) - 0.5) * fpnAmount * isoMultiplier * 0.75;
-    let cmosFpn = (rowNoise + colNoise) * clamp(1.2 - postLum * 1.8, 0.15, 1.0);
+    let rowNoise = (hash12(vec2<f32>(floor(in.uv.y * res.y), 3.1)) - 0.5) * fpnAmount * isoMultiplier * 0.16;
+    let colNoise = (hash12(vec2<f32>(floor(in.uv.x * res.x), 8.7)) - 0.5) * fpnAmount * isoMultiplier * 0.12;
+    let cmosFpn = (rowNoise + colNoise) * clamp(1.0 - postLum * 2.0, 0.0, 0.85);
 
     let midtoneWeight = 3.6 * postLum * (1.0 - postLum * 0.75) + 0.15;
     color += vec3<f32>(
